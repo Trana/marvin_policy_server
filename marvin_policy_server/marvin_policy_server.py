@@ -23,8 +23,9 @@ import time
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState, Imu 
-# from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray
 from message_filters import Subscriber, TimeSynchronizer, ApproximateTimeSynchronizer
+from sensor_msgs.msg import Joy
 
 
 class MarvinPolicyServer(Node):
@@ -66,12 +67,19 @@ class MarvinPolicyServer(Node):
             self._cmd_vel_callback,
             qos_profile=10)
 
+        self._joy_subscription = self.create_subscription(
+            Joy,
+            '/joy',
+            self._joy_callback,
+            qos_profile=10
+        )
+
         # Create publisher for joint commands
         self._joint_publisher = self.create_publisher(
-            JointState,
-            # Float64MultiArray,
-            '/isaac_joint_commands',
-            # 'marvin_joint_controller/commands',
+            # JointState,
+            Float64MultiArray,
+            # '/isaac_joint_commands',
+            'marvin_joint_controller/commands',
             qos_profile=sim_qos_profile)
 
         # Setup synchronized subscribers for IMU and joint state data
@@ -81,10 +89,12 @@ class MarvinPolicyServer(Node):
             '/imu',
             qos_profile=sim_qos_profile,
         )
+
         self._joint_states_sub_filter = Subscriber(
             self,
             JointState,
-            '/isaac_joint_states',
+            # '/isaac_joint_states',
+            '/joint_states',
             qos_profile=sim_qos_profile,
         )
         queue_size = 10
@@ -92,7 +102,7 @@ class MarvinPolicyServer(Node):
         subscribers = [self._joint_states_sub_filter, self._imu_sub_filter]
 
         # Time synchronizer to ensure joint state and IMU data are processed together
-        self.sync = TimeSynchronizer(subscribers, queue_size)
+        self.sync = ApproximateTimeSynchronizer(subscribers, queue_size, 0.6, self.get_clock())
 
         def log_and_tick(joint_state, imu):
             # self._logger.info("Received synchronized JointState and Imu messages")
@@ -106,8 +116,8 @@ class MarvinPolicyServer(Node):
 
         # Initialize state variables
         self._joint_state = JointState()
-        # self._joint_command = Float64MultiArray()
-        self._joint_command = JointState()
+        self._joint_command = Float64MultiArray()
+        # self._joint_command = JointState()
         self._cmd_vel = Twist()
         self._imu = Imu()
         # Same as in extension
@@ -179,6 +189,22 @@ class MarvinPolicyServer(Node):
 
         self._logger.info("Initializing MarvinController")
 
+    def _joy_callback(self, msg):
+        twist = Twist()
+        # Map axes to Twist fields based on your config
+        twist.linear.x = msg.axes[1] * 2    # Left stick up/down
+        twist.angular.z = msg.axes[0]  # Left stick left/right (yaw)
+        # twist.linear.y = msg.axes[0]    # Left stick left/right
+        # twist.linear.z = msg.axes[7]    # Cross up/down
+        # twist.angular.x = msg.axes[6]   # Cross left/right (roll)
+        # twist.angular.y = msg.axes[4]   # Right stick up/down (pitch)
+        twist.linear.y = msg.axes[3]   # Right stick left/right (yaw)
+        self._cmd_vel = twist
+        self._logger.info(
+            f"Joy->Twist: lin=({twist.linear.x}, {twist.linear.y}, {twist.linear.z}), "
+            f"ang=({twist.angular.x}, {twist.angular.y}, {twist.angular.z})"
+        )
+
     def _cmd_vel_callback(self, msg):
         """Store the latest velocity command."""
         self._cmd_vel = msg
@@ -210,15 +236,15 @@ class MarvinPolicyServer(Node):
         self.forward(joint_state, imu)
 
         # Prepare and publish the joint command message
-        self._joint_command.header.stamp = self.get_clock().now().to_msg()
-        self._joint_command.name = self.joint_names
+        # self._joint_command.header.stamp = self.get_clock().now().to_msg()
+        # self._joint_command.name = self.joint_names
         
         # Compute final joint positions by adding scaled actions to default positions
         action_pos = self.default_pos + (self.action * self._action_scale)
-        # self._joint_command.data = action_pos.tolist()
-        self._joint_command.position = action_pos.tolist()
-        self._joint_command.velocity = np.zeros(len(self.joint_names)).tolist()
-        self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
+        self._joint_command.data = action_pos.tolist()
+        # self._joint_command.position = action_pos.tolist()
+        # self._joint_command.velocity = np.zeros(len(self.joint_names)).tolist()
+        # self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
         self._joint_publisher.publish(self._joint_command)
 
 
@@ -300,23 +326,6 @@ class MarvinPolicyServer(Node):
         obs[24:36] = current_joint_vel
         obs[36:48] = self._previous_action
 
-        # Previous Action
-        # working observations
-        # obs = np.array([
-        #     -5.63125957e-04,  1.19583442e-04,  1.90295313e-02, -8.12328851e-04,
-        #     2.62006618e-04,  1.10231055e-05,  1.14435471e-02, -5.79303097e-03,
-        #     -9.99917740e-01,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
-        #     1.92985162e-02, -3.61246429e-02,  7.96489790e-03,  1.64176393e-02,
-        #     5.54808597e-02, -3.99552802e-02, -1.43656949e-02, -5.39752622e-02,
-        #     1.74683684e-01, -1.77788133e-01, -1.75175303e-01,  1.78479785e-01,
-        #     1.65282330e-03,  3.07996734e-03, -2.40746490e-03, -1.70999649e-03,
-        #     -7.07001314e-02,  7.76687935e-02,  7.22212270e-02, -7.14234561e-02,
-        #     -1.19785279e-01,  1.21698461e-01,  1.24407470e-01, -1.18479051e-01,
-        #     8.63728598e-02,  1.41581148e-01,  6.21595085e-02,  2.89009869e-01,
-        #     1.64836347e-01, -8.35022405e-02, -1.44479156e-01, -9.60966051e-02,
-        #     1.97437706e+01, -1.02578382e+01, -9.58512211e+00,  1.97399521e+01
-        # ])
-        
         # self._logger.info(f"Observation: {obs}")
         return obs
     def _compute_action(self, obs):
