@@ -24,10 +24,16 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState, Imu 
 from std_msgs.msg import Float64MultiArray
+from std_srvs.srv import SetBool
 # from message_filters import Subscriber, TimeSynchronizer, ApproximateTimeSynchronizer
 from sensor_msgs.msg import Joy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
+
+# New modular imports
+from .activation_manager import ActivationManager, ActivationConfig
+from .observation import ObservationBuilder, ObservationState, quat_to_rot_matrix  # noqa: F401 (quat reuse)
+from .policy_runner import PolicyRunner, PolicyRunnerConfig
 
 
 
@@ -41,11 +47,14 @@ class MarvinPolicyServer(Node):
 
     def __init__(self):
         """Initialize the marvin controller node."""
-        super().__init__('marvin_controller')
+        super().__init__('marvin_policy_server')
 
         # Declare and set parameters
         self.declare_parameter('publish_period_ms', 5)
         self.declare_parameter('policy_path', 'policy/marvin_policy.pt')
+        self.declare_parameter('activation_ramp_duration', 1.0)    # seconds to smoothly ramp in
+        self.declare_parameter('deactivation_ramp_duration', 1.0)  # seconds to smoothly ramp out
+        self.declare_parameter('release_after_deactivate', True)   # if True, stop publishing after ramp-down
         self.set_parameters(
             [rclpy.parameter.Parameter(
                 'use_sim_time', 
@@ -117,38 +126,17 @@ class MarvinPolicyServer(Node):
         self.policy_path = self.get_parameter('policy_path').value
         self.load_policy()
 
-        # Initialize state variables
+        # Initialize state variables (original kept; structured below)
         self._joint_state = JointState()
         self._joint_command = Float64MultiArray()
-        # self._joint_command = JointState()
         self._cmd_vel = Twist()
         self._imu = Imu()
-        # Same as in extension
-        self._action_scale = 0.25  # Scale factor for policy output
-        self._previous_action = np.zeros(12)
-        self._policy_counter = 0
-        self._decimation = 4  # Run policy every 4 ticks to reduce computation same as in extension
+        self._action_scale = 0.25
         self._last_tick_time = self.get_clock().now().nanoseconds * 1e-9
-        self._lin_vel_b = np.zeros(3)  # Linear velocity in body frame
-        self._dt = 0.0  # Time delta between ticks
+        self._dt = 0.0
         
         # Default joint positions representing the nominal stance
         self.default_pos = np.array([0, 0, 0, 0, 0.7853981633974483, -0.7853981633974483, -0.7853981633974483, 0.7853981633974483, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306, 1.2217304763960306])
-         
-        # used in isaac lambda
-        # joint_pos={
-        #     "F[L,R]_hip_joint": 0,
-        #     "R[L,R]_hip_joint": 0,
-        #     ".*L_thigh_joint": radians(45),
-        #     ".*R_thigh_joint": radians(-45),
-        #     ".*L_calf_joint": radians(70),
-        #     ".*R_calf_joint": radians(-70),
-            
-        # },
-
-        # Joint list output from isaac sim:
-        #  Joint names: ['FL_hip_joint', 'FR_hip_joint', 'RL_hip_joint', 'RR_hip_joint', 'FL_thigh_joint', 'FR_thigh_joint', 'RR_thigh_joint', 'RL_thigh_joint', 'FL_calf_joint', 'FR_calf_joint', 'RR_calf_joint', 'RL_calf_joint']
-
 
         # Joint names in the order expected by the policy
         self.joint_names = [
@@ -166,33 +154,41 @@ class MarvinPolicyServer(Node):
             'RL_calf_joint'
         ]
 
-        # self.joint_names = [
-        #     'FR_hip_joint',
-        #     'FR_thigh_joint',
-        #     'FR_calf_joint',
-
-        #     'FL_hip_joint',
-        #     'FL_thigh_joint',
-        #     'FL_calf_joint',
-            
-        #     'RR_hip_joint',
-        #     'RR_thigh_joint',
-        #     'RR_calf_joint',
-            
-        #     'RL_hip_joint',
-        #     'RL_thigh_joint',
-        #     'RL_calf_joint'
-        # ]
-
-        # Update default positions to match the new joint count/order
-        # self.default_pos = np.zeros(len(self.joint_names))
-        self._previous_action = np.zeros(len(self.joint_names))
-        # Initialize action placeholder to avoid attribute errors before first policy compute
+        # --- Modular components ---
+        self._obs_builder = ObservationBuilder(self.joint_names)
+        self._obs_state = ObservationState(
+            lin_vel_b=np.zeros(3),
+            previous_action=np.zeros(len(self.joint_names)),
+            default_pos=self.default_pos.copy(),
+        )
+        decimation = 4  # original value
+        self._policy_runner = PolicyRunner(self.policy, len(self.joint_names), PolicyRunnerConfig(decimation=decimation))
+        self._activation_mgr = ActivationManager(ActivationConfig(
+            activation_ramp_duration=float(self.get_parameter('activation_ramp_duration').value),
+            deactivation_ramp_duration=float(self.get_parameter('deactivation_ramp_duration').value),
+            release_after_deactivate=bool(self.get_parameter('release_after_deactivate').value),
+        ))
+        self._set_active_srv = self.create_service(SetBool, 'set_active', self._set_active_cb)
         self.action = np.zeros(len(self.joint_names))
+        self._previous_action = self._obs_state.previous_action
+        self._logger.info("Initializing MarvinController (inactive by default; call /marvin_controller/set_active to enable)")
 
+    def _set_active_cb(self, request, response):
+        """Handle SetBool to enable/disable policy output.
 
-
-        self._logger.info("Initializing MarvinController")
+        When activating: start ramp timer. When deactivating: reset actions and publish default stance once.
+        """
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if request.data:
+            success, msg = self._activation_mgr.request_activate(now)
+            response.success = success
+            response.message = msg
+        else:
+            # Provide current action (unscaled raw) for ramp start
+            success, msg = self._activation_mgr.request_deactivate(now, self.action)
+            response.success = success
+            response.message = msg
+        return response
 
     def _joy_callback(self, msg):
         twist = Twist()
@@ -210,7 +206,8 @@ class MarvinPolicyServer(Node):
         # twist.linear.z = 0
 
 
-        twist.linear.y = msg.axes[0] if abs(msg.axes[0]) >= 0.06 else 0.0  # Left stick left/right
+        twist.linear.y = msg.axes[0] 
+        # if abs(msg.axes[0]) >= 0.06 else 0.0  # Left stick left/right
         twist.linear.y = 0
         # twist.linear.z = msg.axes[7]    # Cross up/down
         # twist.angular.x = msg.axes[6]   # Cross left/right (roll)
@@ -248,181 +245,44 @@ class MarvinPolicyServer(Node):
         joint_state = self._latest_joint_state
         imu = self._latest_imu
 
-        # Optional: data freshness check (skip if older than 0.2s)
+        # Data freshness check (original logic retained)
         js_age = now_time - (joint_state.header.stamp.sec + joint_state.header.stamp.nanosec * 1e-9 if joint_state.header.stamp else now_time)
         imu_age = now_time - (imu.header.stamp.sec + imu.header.stamp.nanosec * 1e-9 if imu.header.stamp else now_time)
         if js_age > 0.5 or imu_age > 0.5:
-            # Too stale, skip this cycle
             return
 
-        # Run forward pass
-        self.forward(joint_state, imu)
+        # If not active, keep publishing default stance (so downstream controllers hold posture)
+        if not self._activation_mgr.is_active():
+            blended = self._activation_mgr.compute_deactivation_blend(now_time)
+            if blended is not None:
+                # Use ramp-down blending (blended already scaled raw action; apply scale here)
+                action_pos = self.default_pos + blended * self._action_scale
+                self._joint_command.data = action_pos.tolist()
+                self._joint_publisher.publish(self._joint_command)
+                return
+            if self._activation_mgr.is_released():
+                return
+            # Publish default stance while inactive & not released
+            self._joint_command.data = self.default_pos.tolist()
+            self._joint_publisher.publish(self._joint_command)
+            return
 
-        # Publish joint commands
-        action_pos = self.default_pos + (self.action * self._action_scale)
+        # Build observation via modular builder
+        obs = self._obs_builder.build(joint_state, imu, self._cmd_vel, self._dt, self._obs_state)
+        # Run policy (decimated)
+        self.action = self._policy_runner.step(obs)
+        # Link previous action reference for legacy observation method compatibility
+        self._obs_state.previous_action = self._policy_runner.previous_action
+
+        # Compute ramp factor if within activation ramp window
+        ramp_factor = self._activation_mgr.compute_activation_factor(now_time)
+
+        # Blend action with default stance using ramp_factor
+        action_pos = self.default_pos + (self.action * self._action_scale * ramp_factor)
         self._joint_command.data = action_pos.tolist()
         self._joint_publisher.publish(self._joint_command)
-
-
-    def _compute_observation(self, joint_state: JointState, imu: Imu):
-        """
-        Compute the observation vector for the policy
-
-        Argument:
-        command (np.ndarray) -- the robot command (v_x, v_y, w_z)
-
-        Returns:
-        np.ndarray -- The observation vector.
-
-        """
-
-        # Extract quaternion orientation from IMU
-        quat_I = imu.orientation
-        quat_array = np.array([quat_I.w, quat_I.x, quat_I.y, quat_I.z])
-
-        # Convert quaternion to rotation matrix
-        # (transpose for body to inertial frame)
-        R_BI = self.quat_to_rot_matrix(quat_array).T
-
-        # Extract linear acceleration and integrate to estimate velocity
-        lin_acc_b = np.array([
-            imu.linear_acceleration.x,
-            imu.linear_acceleration.y,
-            imu.linear_acceleration.z
-        ])
-        
-        # Simple integration to estimate velocity
-        self._lin_vel_b = lin_acc_b * self._dt + self._lin_vel_b
-        
-        # Extract angular velocity
-        ang_vel_b = np.array([
-            imu.angular_velocity.x,
-            imu.angular_velocity.y,
-            imu.angular_velocity.z
-        ])
-        
-        # Calculate gravity direction in body frame
-        gravity_b = np.matmul(R_BI, np.array([0.0, 0.0, -1.0]))
-
-
-        # Prepare command vector
-        cmd_vel = [
-            self._cmd_vel.linear.x,
-            self._cmd_vel.linear.y,
-            self._cmd_vel.angular.z
-        ]
-        
-        # self._lin_vel_b = v_b_est
-        obs = np.zeros(48)
-        # Base lin vel
-        obs[:3] = self._lin_vel_b
-        # Base ang vel
-        obs[3:6] = ang_vel_b
-        # Gravity
-        obs[6:9] = gravity_b
-        # Command
-        obs[9:12] = cmd_vel
-
-        # Joint states
-        # Joint states (12 positions + 12 velocities)
-        current_joint_pos = np.zeros(12)
-        current_joint_vel = np.zeros(12)
-
-        # Map joint states from message to our ordered arrays
-        for i, name in enumerate(self.joint_names):
-            if name in joint_state.name:
-                idx = joint_state.name.index(name)
-                current_joint_pos[i] = joint_state.position[idx]
-                current_joint_vel[i] = joint_state.velocity[idx]
-
-        # current_joint_pos = joint_state.position
-        # current_joint_vel = joint_state.velocity
-        
-        obs[12:24] = current_joint_pos - self.default_pos
-        obs[24:36] = current_joint_vel
-        obs[36:48] = self._previous_action
-
-        # Previous Action
-        # working observations
-        workingObs = np.array([
-            -5.63125957e-04,  1.19583442e-04,  1.90295313e-02, -8.12328851e-04,
-            2.62006618e-04,  1.10231055e-05,  1.14435471e-02, -5.79303097e-03,
-            -9.99917740e-01,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
-            1.92985162e-02, -3.61246429e-02,  7.96489790e-03,  1.64176393e-02,
-            5.54808597e-02, -3.99552802e-02, -1.43656949e-02, -5.39752622e-02,
-            1.74683684e-01, -1.77788133e-01, -1.75175303e-01,  1.78479785e-01,
-            1.65282330e-03,  3.07996734e-03, -2.40746490e-03, -1.70999649e-03,
-            -7.07001314e-02,  7.76687935e-02,  7.22212270e-02, -7.14234561e-02,
-            -1.19785279e-01,  1.21698461e-01,  1.24407470e-01, -1.18479051e-01,
-            8.63728598e-02,  1.41581148e-01,  6.21595085e-02,  2.89009869e-01,
-            1.64836347e-01, -8.35022405e-02, -1.44479156e-01, -9.60966051e-02,
-            1.97437706e+01, -1.02578382e+01, -9.58512211e+00,  1.97399521e+01
-        ])
-
-        # obs = workingObs
-        # self._logger.info(f"Observation: {obs}")
-        return obs
-    def _compute_action(self, obs):
-        """Run the neural network policy to compute an action from the observation.
-        
-        Args:
-            obs: Observation vector containing robot state information
-            
-        Returns:
-            np.ndarray: Action vector containing joint position adjustments
-        """
-        # Run inference with the PyTorch policy
-        with torch.no_grad():
-            obs = torch.from_numpy(obs).view(1, -1).float()
-            action = self.policy(obs).detach().view(-1).numpy()
-
-
-        # self._logger.info(f"Policy action: {action}")
-        return action
-
-    def forward(self, joint_state: JointState, imu: Imu):
-        """Process sensor data and compute control actions.
-        
-        This combines observation computation and policy evaluation.
-        The policy is run at a reduced rate (decimation) to save computation.
-        
-        Args:
-            joint_state: Current joint positions and velocities
-            imu: Current IMU data
-        """
-        # Compute observation from current state
-        obs = self._compute_observation(joint_state, imu)
-
-        # Run policy at reduced frequency (every _decimation ticks)
-        if self._policy_counter % self._decimation == 0:
-            self.action = self._compute_action(obs)
-            self._previous_action = self.action.copy()
-        self._policy_counter += 1
-
-    def quat_to_rot_matrix(self, quat: np.ndarray) -> np.ndarray:
-        """Convert input quaternion to rotation matrix.
-
-        Args:
-            quat (np.ndarray): Input quaternion (w, x, y, z).
-
-        Returns:
-            np.ndarray: A 3x3 rotation matrix.
-        """
-        q = np.array(quat, dtype=np.float64, copy=True)
-        nq = np.dot(q, q)
-        if nq < 1e-10:
-            return np.identity(3)
-        q *= np.sqrt(2.0 / nq)
-        q = np.outer(q, q)
-        return np.array(
-            (
-                (1.0 - q[2, 2] - q[3, 3], q[1, 2] - q[3, 0], q[1, 3] + q[2, 0]),
-                (q[1, 2] + q[3, 0], 1.0 - q[1, 1] - q[3, 3], q[2, 3] - q[1, 0]),
-                (q[1, 3] - q[2, 0], q[2, 3] + q[1, 0], 1.0 - q[1, 1] - q[2, 2]),
-            ),
-            dtype=np.float64,
-        )
-
+    # Legacy methods (_compute_observation, _compute_action, forward, quat_to_rot_matrix)
+    # are now handled by modular components but retained above as commented history.
     def load_policy(self):
         """Load the neural network policy from the specified path."""
         # Load policy from file to io.BytesIO object
