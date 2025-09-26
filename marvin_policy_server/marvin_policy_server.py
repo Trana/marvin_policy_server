@@ -24,7 +24,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState, Imu 
 from std_msgs.msg import Float64MultiArray
-from message_filters import Subscriber, TimeSynchronizer, ApproximateTimeSynchronizer
+# from message_filters import Subscriber, TimeSynchronizer, ApproximateTimeSynchronizer
 from sensor_msgs.msg import Joy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
@@ -92,24 +92,26 @@ class MarvinPolicyServer(Node):
         self._joint_publisher = self.create_publisher(Float64MultiArray, 'marvin_joint_controller/commands', qos_profile=cmd_qos)
         # self._joint_publisher = self.create_publisher(JointState, 'isaac_joint_commands', qos_profile=sim_qos_profile)
 
-        # Subscriptions (use sensor_qos)
-        self._imu_sub_filter = Subscriber(self, Imu, '/imu', qos_profile=sensor_qos)
-        self._joint_states_sub_filter = Subscriber(self, JointState, '/joint_states', qos_profile=sensor_qos)
+        # Subscriptions (direct, store latest messages)
+        self._latest_joint_state = None
+        self._latest_imu = None
 
+        self._joint_state_sub = self.create_subscription(
+            JointState,
+            '/joint_states',
+            self._joint_state_cb,
+            qos_profile=sensor_qos
+        )
+        self._imu_sub = self.create_subscription(
+            Imu,
+            '/imu',
+            self._imu_cb,
+            qos_profile=sensor_qos
+        )
 
-
-        # self.sync = ApproximateTimeSynchronizer([self._joint_states_sub_filter, self._imu_sub_filter],
-        #                                 queue_size=5,
-        #                                 slop=0.003,
-        #                                 allow_headerless=False)
-
-        self.sync = TimeSynchronizer([self._joint_states_sub_filter, self._imu_sub_filter], queue_size=2)
-
-        def log_and_tick(joint_state, imu):
-            # self._logger.info("Received synchronized JointState and Imu messages")
-            self._tick(joint_state, imu)
-
-        self.sync.registerCallback(log_and_tick)
+        # Timer for control loop
+        publish_period_ms = self.get_parameter('publish_period_ms').value
+        self._timer = self.create_timer(publish_period_ms / 1000.0, self._timer_tick)
 
         # Load neural network policy
         self.policy_path = self.get_parameter('policy_path').value
@@ -185,6 +187,8 @@ class MarvinPolicyServer(Node):
         # Update default positions to match the new joint count/order
         # self.default_pos = np.zeros(len(self.joint_names))
         self._previous_action = np.zeros(len(self.joint_names))
+        # Initialize action placeholder to avoid attribute errors before first policy compute
+        self.action = np.zeros(len(self.joint_names))
 
 
 
@@ -222,45 +226,41 @@ class MarvinPolicyServer(Node):
         """Store the latest velocity command."""
         self._cmd_vel = msg
 
-    def _tick(self, joint_state: JointState, imu: Imu):
-        """Process synchronized joint state and IMU data to generate robot commands.
-        
-        This method is called whenever new joint state and IMU data are available.
-        It computes the policy's action and publishes the resulting joint
-        commands.
-        
-        Args:
-            joint_state: Current joint positions and velocities
-            imu: Current IMU data (orientation, angular velocity, acceleration)
-        """
-        # Reset if time jumped backwards (most likely due to sim time reset)
-        # stamp_js  = joint_state.header.stamp.sec + joint_state.header.stamp.nanosec * 1e-9
-        stamp_imu = imu.header.stamp.sec        + imu.header.stamp.nanosec        * 1e-9
-        msg_time  = self.get_clock().now().nanoseconds * 1e-9
+    def _joint_state_cb(self, msg: JointState):
+        # Store latest joint state
+        self._latest_joint_state = msg
 
-        if msg_time < self._last_tick_time:
-            self._logger.error(
-                f'{self._get_stamp_prefix()} Time jumped backwards. Resetting.'
-            )
+    def _imu_cb(self, msg: Imu):
+        # Store latest imu
+        self._latest_imu = msg
 
-        # self._logger.error("Tick")
-        # Calculate time delta since last tick
-        self._dt = max(1e-4, msg_time - self._last_tick_time)
-        self._last_tick_time = msg_time
+    def _timer_tick(self):
+        """Periodic control loop driven by ROS timer instead of synchronized callback."""
+        # Need both messages before proceeding
+        if self._latest_joint_state is None or self._latest_imu is None:
+            return
 
-        # Run the control policy
+        now_time = self.get_clock().now().nanoseconds * 1e-9
+        # Compute dt
+        self._dt = max(1e-4, now_time - self._last_tick_time)
+        self._last_tick_time = now_time
+
+        joint_state = self._latest_joint_state
+        imu = self._latest_imu
+
+        # Optional: data freshness check (skip if older than 0.2s)
+        js_age = now_time - (joint_state.header.stamp.sec + joint_state.header.stamp.nanosec * 1e-9 if joint_state.header.stamp else now_time)
+        imu_age = now_time - (imu.header.stamp.sec + imu.header.stamp.nanosec * 1e-9 if imu.header.stamp else now_time)
+        if js_age > 0.5 or imu_age > 0.5:
+            # Too stale, skip this cycle
+            return
+
+        # Run forward pass
         self.forward(joint_state, imu)
 
-        # Prepare and publish the joint command message
-        # self._joint_command.header.stamp = self.get_clock().now().to_msg()
-        # self._joint_command.name = self.joint_names
-        
-        # Compute final joint positions by adding scaled actions to default positions
+        # Publish joint commands
         action_pos = self.default_pos + (self.action * self._action_scale)
         self._joint_command.data = action_pos.tolist()
-        # self._joint_command.position = action_pos.tolist()
-        # self._joint_command.velocity = np.zeros(len(self.joint_names)).tolist()
-        # self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
         self._joint_publisher.publish(self._joint_command)
 
 
