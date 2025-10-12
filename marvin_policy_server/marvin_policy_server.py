@@ -55,13 +55,6 @@ class MarvinPolicyServer(Node):
         self.declare_parameter('activation_ramp_duration', 1.0)    # seconds to smoothly ramp in
         self.declare_parameter('deactivation_ramp_duration', 1.0)  # seconds to smoothly ramp out
         self.declare_parameter('release_after_deactivate', True)   # if True, stop publishing after ramp-down
-        self.set_parameters(
-            [rclpy.parameter.Parameter(
-                'use_sim_time', 
-                rclpy.Parameter.Type.BOOL, 
-                True
-            )]
-        )
 
         self._logger = self.get_logger()
         
@@ -167,7 +160,7 @@ class MarvinPolicyServer(Node):
             activation_ramp_duration=float(self.get_parameter('activation_ramp_duration').value),
             deactivation_ramp_duration=float(self.get_parameter('deactivation_ramp_duration').value),
             release_after_deactivate=bool(self.get_parameter('release_after_deactivate').value),
-        ))
+        ), logger=self.get_logger())
         self._set_active_srv = self.create_service(SetBool, 'set_active', self._set_active_cb)
         self.action = np.zeros(len(self.joint_names))
         self._previous_action = self._obs_state.previous_action
