@@ -225,7 +225,7 @@ class MarvinPolicyServer(Node):
         self._latest_imu = msg
 
     def _timer_tick(self):
-        """Periodic control loop driven by ROS timer instead of synchronized callback."""
+        
         # Need both messages before proceeding
         if self._latest_joint_state is None or self._latest_imu is None:
             return
@@ -253,11 +253,6 @@ class MarvinPolicyServer(Node):
                 self._joint_command.data = action_pos.tolist()
                 self._joint_publisher.publish(self._joint_command)
                 return
-            if self._activation_mgr.is_released():
-                return
-            # Publish default stance while inactive & not released
-            self._joint_command.data = self.default_pos.tolist()
-            self._joint_publisher.publish(self._joint_command)
             return
 
         # Build observation via modular builder
@@ -272,6 +267,21 @@ class MarvinPolicyServer(Node):
 
         # Blend action with default stance using ramp_factor
         action_pos = self.default_pos + (self.action * self._action_scale * ramp_factor)
+        # Default stance position
+        # action_pos = np.array([
+        #     0.013983699157926743,
+        #     0.014070058297082522,
+        #     0.010710449401688749,
+        #     0.010222955727580363,
+        #     0.7223747663654485,
+        #     -0.6927793343187066,
+        #     -0.8130560657618886,
+        #     0.8646544758427479,
+        #     1.4660535165153326,
+        #     -1.4433106484754676,
+        #     -1.3653020549923698,
+        #     1.4227150784029632
+        # ], dtype=float)
         self._joint_command.data = action_pos.tolist()
         self._joint_publisher.publish(self._joint_command)
     # Legacy methods (_compute_observation, _compute_action, forward, quat_to_rot_matrix)
