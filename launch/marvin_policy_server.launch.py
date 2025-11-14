@@ -24,7 +24,7 @@ import os
 def generate_launch_description():
     policy_path = os.path.join(
         get_package_share_directory('marvin_policy_server'),
-        'policy/marvin_policy.pt'
+        'policy/policy.pt'
     )
     return LaunchDescription([
         DeclareLaunchArgument(

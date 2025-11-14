@@ -9,10 +9,8 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/marvin_policy_server.launch.py']),
-        ('share/' + package_name + '/policy', ['policy/marvin_policy.pt']),
+        ('share/' + package_name + '/launch', ['launch/marvin_policy_server.launch.py']),        
         ('share/' + package_name + '/policy', ['policy/policy.pt']),
-        ('share/' + package_name + '/policy', ['policy/marvin_env.yaml']),
         ('share/' + package_name + '/policy', ['policy/env.yaml']),
     ],
     install_requires=['setuptools'],
