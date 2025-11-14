@@ -51,7 +51,7 @@ class MarvinPolicyServer(Node):
 
         # Declare and set parameters
         self.declare_parameter('publish_period_ms', 5)
-        self.declare_parameter('policy_path', 'policy/marvin_policy.pt')
+        self.declare_parameter('policy_path', 'policy/policy.pt')
         self.declare_parameter('activation_ramp_duration', 1.0)    # seconds to smoothly ramp in
         self.declare_parameter('deactivation_ramp_duration', 1.0)  # seconds to smoothly ramp out
         self.declare_parameter('release_after_deactivate', True)   # if True, stop publishing after ramp-down
@@ -88,6 +88,7 @@ class MarvinPolicyServer(Node):
             reliability=rclpy.qos.ReliabilityPolicy.RELIABLE,
             durability=rclpy.qos.DurabilityPolicy.VOLATILE,
             history=rclpy.qos.HistoryPolicy.KEEP_ALL,
+            # depth=1
         )
 
         # Publisher (use cmd_qos)
@@ -121,6 +122,7 @@ class MarvinPolicyServer(Node):
 
         # Initialize state variables (original kept; structured below)
         self._joint_state = JointState()
+        # self._joint_command = JointState()
         self._joint_command = Float64MultiArray()
         self._cmd_vel = Twist()
         self._imu = Imu()
@@ -129,22 +131,22 @@ class MarvinPolicyServer(Node):
         self._dt = 0.0
         
         # Default joint positions representing the nominal stance
-        self.default_pos = np.array([0, 0, 0, 0, 0.7853981633974483, -0.7853981633974483, -0.7853981633974483, 0.7853981633974483, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306, 1.2217304763960306])
+        self.default_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.6981317007977318, 0.9948376736367679, -0.6981317007977318, -0.9948376736367679, 1.2217304763960306, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306])
 
         # Joint names in the order expected by the policy
         self.joint_names = [
             'FL_hip_joint',
-            'FR_hip_joint',
             'RL_hip_joint',
+            'FR_hip_joint',            
             'RR_hip_joint',
             'FL_thigh_joint',
+            'RL_thigh_joint',
             'FR_thigh_joint',
             'RR_thigh_joint',
-            'RL_thigh_joint',
             'FL_calf_joint',
+            'RL_calf_joint',
             'FR_calf_joint',
-            'RR_calf_joint',
-            'RL_calf_joint'
+            'RR_calf_joint',            
         ]
 
         # --- Modular components ---
@@ -187,8 +189,8 @@ class MarvinPolicyServer(Node):
         twist = Twist()
         # Map axes to Twist fields based on your config
         # Apply deadband: if abs(value) < 0.06, set to zero
-        linear_x = msg.axes[1] * 2 if msg.axes[1] > 0 else msg.axes[1]
-        angular_z = msg.axes[0] * 1.5
+        linear_x = msg.axes[1] * 1 if msg.axes[1] > 0 else msg.axes[1]
+        angular_z = msg.axes[0] * 0.75
 
 # if abs(linear_x) >= 0.06 else 0.0
 #         if abs(angular_z) >= 0.06 else 0.0
@@ -257,8 +259,13 @@ class MarvinPolicyServer(Node):
 
         # Build observation via modular builder
         obs = self._obs_builder.build(joint_state, imu, self._cmd_vel, self._dt, self._obs_state)
+        # self._logger.info(f"obs : {obs}")
+        ang_vel_b_str = np.array2string(obs[3:6], precision=4, suppress_small=True)
+        # self.get_logger().info(f"ang_vel_b: {ang_vel_b_str}")
+
         # Run policy (decimated)
         self.action = self._policy_runner.step(obs)
+        # self._logger.info(f"Policy action: {self.action}")
         # Link previous action reference for legacy observation method compatibility
         self._obs_state.previous_action = self._policy_runner.previous_action
 
@@ -274,14 +281,31 @@ class MarvinPolicyServer(Node):
         #     0.010710449401688749,
         #     0.010222955727580363,
         #     0.7223747663654485,
-        #     -0.6927793343187066,
-        #     -0.8130560657618886,
         #     0.8646544758427479,
+        #     -0.6927793343187066,
+        #     -0.8130560657618886,            
         #     1.4660535165153326,
+        #     1.4227150784029632,
         #     -1.4433106484754676,
-        #     -1.3653020549923698,
-        #     1.4227150784029632
+        #     -1.3653020549923698,            
         # ], dtype=float)
+
+        # output of policy before scaling and offset
+
+        # [ 5.9300490e-02  1.8793666e-01  1.6632198e-01  1.2081476e-01
+        #   -1.2849021e-01  2.3038940e-01 -1.1642768e-01  3.7860721e-03
+        #    1.8053133e+01 -1.1327438e+01 -1.0141122e+01  1.8795408e+01]
+        # self._joint_command = JointState()
+        # self._joint_command.header.stamp = self.get_clock().now().to_msg()
+        # self._joint_command.name = self.joint_names
+        
+        # Compute final joint positions by adding scaled actions to default positions
+        action_pos = self.default_pos + (self.action * self._action_scale)
+        # self._joint_command.position = action_pos.tolist()
+        # self._joint_command.velocity = np.zeros(len(self.joint_names)).tolist()
+        # self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
+        # self._joint_publisher.publish(self._joint_command)
+ 
         self._joint_command.data = action_pos.tolist()
         self._joint_publisher.publish(self._joint_command)
     # Legacy methods (_compute_observation, _compute_action, forward, quat_to_rot_matrix)
