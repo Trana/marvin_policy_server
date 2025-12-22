@@ -129,9 +129,10 @@ class MarvinPolicyServer(Node):
         self._action_scale = 0.25
         self._last_tick_time = self.get_clock().now().nanoseconds * 1e-9
         self._dt = 0.0
+        self._stale_warn_count = 0
         
         # Default joint positions representing the nominal stance
-        self.default_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.6981317007977318, 0.9948376736367679, -0.6981317007977318, -0.9948376736367679, 1.2217304763960306, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306])
+        self.default_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.471238898, 0.9948376736, -0.471238898, -0.9948376736, 1.2217304763960306, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306])
 
         # Joint names in the order expected by the policy
         self.joint_names = [
@@ -187,27 +188,20 @@ class MarvinPolicyServer(Node):
 
     def _joy_callback(self, msg):
         twist = Twist()
+        def _apply_deadband(value, threshold=0.06):
+            return value if abs(value) >= threshold else 0.0
+        def _scale_axis(value, neg_max, pos_max):
+            # Map [-1, 1] to [neg_max, pos_max] with asymmetric limits if needed.
+            return (pos_max * value) if value >= 0.0 else (abs(neg_max) * value)
         # Map axes to Twist fields based on your config
-        # Apply deadband: if abs(value) < 0.06, set to zero
-        linear_x = msg.axes[1] * 1 if msg.axes[1] > 0 else msg.axes[1]
-        angular_z = msg.axes[0] * 0.75
+        # Apply deadband at 0.06 to filter stick noise
+        linear_x = _scale_axis(_apply_deadband(msg.axes[1]), -2.0, 3.0)
+        angular_z = _scale_axis(_apply_deadband(msg.axes[0]), -2.0, 2.0)
+        strafe_y = _scale_axis(_apply_deadband(msg.axes[3], 0.13), -1.5, 1.5)  # Right stick left/right (yaw/strafe)
 
-# if abs(linear_x) >= 0.06 else 0.0
-#         if abs(angular_z) >= 0.06 else 0.0
-        twist.linear.x = linear_x 
-        twist.angular.z = angular_z 
-
-        # twist.linear.x = 0
-        # twist.linear.z = 0
-
-
-        twist.linear.y = msg.axes[0] 
-        # if abs(msg.axes[0]) >= 0.06 else 0.0  # Left stick left/right
-        twist.linear.y = 0
-        # twist.linear.z = msg.axes[7]    # Cross up/down
-        # twist.angular.x = msg.axes[6]   # Cross left/right (roll)
-        # twist.angular.y = msg.axes[4]   # Right stick up/down (pitch)
-        twist.linear.y = msg.axes[3]   # Right stick left/right (yaw)
+        twist.linear.x = linear_x
+        twist.angular.z = angular_z
+        twist.linear.y = strafe_y
         self._cmd_vel = twist
         # self._logger.info(
         #     f"Joy->Twist: lin=({twist.linear.x}, {twist.linear.y}, {twist.linear.z}), "
@@ -244,7 +238,12 @@ class MarvinPolicyServer(Node):
         js_age = now_time - (joint_state.header.stamp.sec + joint_state.header.stamp.nanosec * 1e-9 if joint_state.header.stamp else now_time)
         imu_age = now_time - (imu.header.stamp.sec + imu.header.stamp.nanosec * 1e-9 if imu.header.stamp else now_time)
         if js_age > 0.5 or imu_age > 0.5:
+            if self._stale_warn_count < 10:
+                self._stale_warn_count += 1
+                self._logger.warn(f"Stale sensor data detected (joint_state age: {js_age:.3f}s, imu age: {imu_age:.3f}s); skipping control tick")
             return
+
+        self._stale_warn_count = 0  # reset counter on fresh data
 
         # If not active, keep publishing default stance (so downstream controllers hold posture)
         if not self._activation_mgr.is_active():
