@@ -20,6 +20,7 @@ import torch
 import numpy as np
 import io
 import time
+from pathlib import Path
 from rclpy.node import Node
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import JointState, Imu 
@@ -34,6 +35,7 @@ from rclpy.qos import qos_profile_sensor_data
 from .activation_manager import ActivationManager, ActivationConfig
 from .observation import ObservationBuilder, ObservationState, quat_to_rot_matrix  # noqa: F401 (quat reuse)
 from .policy_runner import PolicyRunner, PolicyRunnerConfig
+from .env_config_loader import EnvConfigLoader
 
 
 
@@ -131,24 +133,10 @@ class MarvinPolicyServer(Node):
         self._dt = 0.0
         self._stale_warn_count = 0
         
-        # Default joint positions representing the nominal stance
-        self.default_pos = np.array([0.0, 0.0, 0.0, 0.0, 0.471238898, 0.9948376736, -0.471238898, -0.9948376736, 1.2217304763960306, 1.2217304763960306, -1.2217304763960306, -1.2217304763960306])
-
-        # Joint names in the order expected by the policy
-        self.joint_names = [
-            'FL_hip_joint',
-            'RL_hip_joint',
-            'FR_hip_joint',            
-            'RR_hip_joint',
-            'FL_thigh_joint',
-            'RL_thigh_joint',
-            'FR_thigh_joint',
-            'RR_thigh_joint',
-            'FL_calf_joint',
-            'RL_calf_joint',
-            'FR_calf_joint',
-            'RR_calf_joint',            
-        ]
+        env_path = Path(__file__).resolve().parent.parent / "policy" / "env.yaml"
+        env_loader = EnvConfigLoader(env_path)
+        self.joint_names = env_loader.get_joint_names()
+        self.default_pos = env_loader.get_default_joint_positions()
 
         # --- Modular components ---
         self._obs_builder = ObservationBuilder(self.joint_names)
@@ -258,7 +246,7 @@ class MarvinPolicyServer(Node):
 
         # Build observation via modular builder
         obs = self._obs_builder.build(joint_state, imu, self._cmd_vel, self._dt, self._obs_state)
-        # self._logger.info(f"obs : {obs}")
+        self._logger.info(f"obs : {obs}")
         ang_vel_b_str = np.array2string(obs[3:6], precision=4, suppress_small=True)
         # self.get_logger().info(f"ang_vel_b: {ang_vel_b_str}")
 
