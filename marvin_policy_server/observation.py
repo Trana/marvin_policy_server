@@ -62,12 +62,12 @@ class ObservationBuilder:
         
         prev_lin_vel = obs_state.lin_vel_b.copy()
         obs_state.lin_vel_b[:] = lin_acc_b * dt + obs_state.lin_vel_b
-        logger.info(
-            f"lin_acc_b={np.array2string(lin_acc_b, precision=6)}, "
-            f"dt={dt}, "
-            f"prev_lin_vel_b={np.array2string(prev_lin_vel, precision=6)}, "
-            f"new_lin_vel_b={np.array2string(obs_state.lin_vel_b, precision=6)}"
-        )
+        # logger.info(
+        #     f"lin_acc_b={np.array2string(lin_acc_b, precision=6)}, "
+        #     f"dt={dt}, "
+        #     f"prev_lin_vel_b={np.array2string(prev_lin_vel, precision=6)}, "
+        #     f"new_lin_vel_b={np.array2string(obs_state.lin_vel_b, precision=6)}"
+        # )
 
         # Zero out small velocity components (magnitude < 0.2)
         # mask = np.abs(obs_state.lin_vel_b) < 0.2
@@ -82,7 +82,7 @@ class ObservationBuilder:
         #     [-1.59406548e-04, -2.59802181e-04,  1.87091297e-02],
         #     dtype=np.float64,
         # )
-        logger.info('obs: %s' %obs_state.lin_vel_b)
+        # logger.info('obs: %s' %obs_state.lin_vel_b)
         # obs_state.lin_vel_b[:] = np.array(
         #     [0.0, 0.0, 0.0],
         #     dtype=np.float64,
@@ -107,12 +107,14 @@ class ObservationBuilder:
         # cmd_vec = [0.0, 0.0, 0.0]
 
 
-        obs = np.zeros(48)
+        obs = np.zeros(45)
         # IMPORTANT ZEROING OUT LIN VELOCITY BECAUSE OF DRIFT
-        obs[:3] = [0.0, 0.0, 0.0]  # obs_state.lin_vel_b
-        obs[3:6] = ang_vel_b
-        obs[6:9] = gravity_b
-        obs[9:12] = cmd_vec
+        # obs[:3] = obs_state.lin_vel_b #[0.0, 0.0, 0.0]  # obs_state.lin_vel_b
+        # Linear acceleration (body) as observation
+        # obs[3:6] = lin_acc_b #[0.0, 0.0, 0.0] 
+        obs[:3] = ang_vel_b
+        obs[3:6] = gravity_b
+        obs[6:9] = cmd_vec
 
         current_joint_pos = np.zeros(12)
         current_joint_vel = np.zeros(12)
@@ -122,11 +124,11 @@ class ObservationBuilder:
                 current_joint_pos[i] = joint_state.position[idx]
                 current_joint_vel[i] = joint_state.velocity[idx]
 
-        obs[12:24] = current_joint_pos - obs_state.default_pos
+        obs[9:21] = current_joint_pos - obs_state.default_pos
         # diff = current_joint_pos - obs_state.default_pos
         # print('pos diff:', np.array2string(diff, precision=6, separator=', '))
-        obs[24:36] = current_joint_vel
-        obs[36:48] = obs_state.previous_action
+        obs[21:33] = current_joint_vel
+        obs[33:45] = obs_state.previous_action
         
         # ang_vel_b_str = np.array2string(ang_vel_b, precision=4, suppress_small=True)
         # logger.info('obs: %s' % obs)
