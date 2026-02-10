@@ -23,6 +23,7 @@ setup(
         'console_scripts': [
             # LEFT = name you run, RIGHT = package.module:function
             'marvin_policy_server = marvin_policy_server.marvin_policy_server:main',
+            'marvin_delay_test = marvin_policy_server.delay_test_node:main',
         ],
     },
 )
