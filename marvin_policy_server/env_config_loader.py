@@ -54,3 +54,17 @@ class EnvConfigLoader:
         data = self._load()
         joint_pos = data["scene"]["robot"]["init_state"]["joint_pos"]
         return list(joint_pos.keys())
+
+    def get_action_history_length(self) -> int:
+        data = self._load()
+        history_len = (
+            data.get("observations", {})
+            .get("policy", {})
+            .get("actions", {})
+            .get("history_length")
+        )
+        try:
+            history_len = int(history_len)
+        except (TypeError, ValueError):
+            history_len = 1
+        return max(1, history_len)

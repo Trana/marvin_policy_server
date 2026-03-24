@@ -32,7 +32,7 @@ def quat_to_rot_matrix(quat: np.ndarray) -> np.ndarray:
 @dataclass
 class ObservationState:
     lin_vel_b: np.ndarray  # shape (3,)
-    previous_action: np.ndarray  # shape (12,)
+    action_history: np.ndarray  # shape (history_len, action_dim)
     default_pos: np.ndarray  # shape (12,)
 
 
@@ -44,7 +44,7 @@ class ObservationBuilder:
     def __init__(self, joint_names: Sequence[str]):
         self.joint_names = list(joint_names)
 
-    def build(self, joint_state: JointState, imu: Imu, cmd_vel, dt: float, obs_state: ObservationState) -> np.ndarray:        
+    def build(self, joint_state: JointState, imu: Imu, cmd_vel, dt: float, obs_state: ObservationState) -> np.ndarray:       
 
         # Quaternion extraction
         quat_I = imu.orientation
@@ -107,7 +107,9 @@ class ObservationBuilder:
         # cmd_vec = [0.0, 0.0, 0.0]
 
 
-        obs = np.zeros(45)
+        action_dim = len(self.joint_names)
+        history_len = obs_state.action_history.shape[0]
+        obs = np.zeros(33 + action_dim * history_len)
         # IMPORTANT ZEROING OUT LIN VELOCITY BECAUSE OF DRIFT
         # obs[:3] = obs_state.lin_vel_b #[0.0, 0.0, 0.0]  # obs_state.lin_vel_b
         # Linear acceleration (body) as observation
@@ -128,41 +130,28 @@ class ObservationBuilder:
         # diff = current_joint_pos - obs_state.default_pos
         # print('pos diff:', np.array2string(diff, precision=6, separator=', '))
         obs[21:33] = current_joint_vel
-        obs[33:45] = obs_state.previous_action
+        obs[33:33 + action_dim * history_len] = obs_state.action_history.reshape(-1)
         
         # ang_vel_b_str = np.array2string(ang_vel_b, precision=4, suppress_small=True)
         # logger.info('obs: %s' % obs)
         
         # Example observation vectors for reference/debugging:
-        # obs = np.array([
-        #     -2.27122939e-04, -1.04240797e-03,  1.86668151e-02,  1.30820591e-04,
-        #     4.06018859e-04, -6.54161420e-04,  2.87281836e-03,  5.19567449e-02,
-        #     -9.98645204e-01,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
-        #     4.34763022e-02, -6.54107407e-02,  1.80343583e-01,  9.78033915e-02,
-        #     9.99135594e-02,  2.13553152e-01, -2.04890988e-01, -1.72359071e-01,
-        #     3.38269943e-01,  3.88945335e-01, -3.54829544e-01, -3.02865499e-01,
-        #     1.14134280e-03,  7.39401160e-03, -1.10237226e-02, -6.63060695e-03,
-        #     -6.28539175e-02, -6.91853985e-02,  7.30465949e-02,  7.41629899e-02,
-        #     -1.11090131e-01, -1.12651236e-01,  1.17409497e-01,  1.21343993e-01,
-        #     -3.59977305e-01,  7.28558004e-03,  8.13645363e-01,  4.62237269e-01,
-        #     1.21130264e+00,  5.87532163e-01,  5.06762683e-01, -1.03605735e+00,
-        #     -2.25508377e-01,  1.44387960e-01, -4.36299890e-01, -6.08238056e-02,
+        # static_obs = np.array([
+        #     -3.18336813e-03, -2.36710650e-04,  5.55757375e-04, -3.07860186e-02,
+        #     -2.73388228e-02, -9.99152045e-01,  0.00000000e+00,  0.00000000e+00,
+        #      0.00000000e+00,  5.45000000e-02, -2.63600000e-01, -1.41000000e-01,
+        #      2.96300000e-01, -2.20105361e-01,  3.14952516e-02,  1.43105361e-01,
+        #     -1.94395252e-01,  1.98802449e-01,  1.78202449e-01, -2.43202449e-01,
+        #     -8.73024488e-02, -9.20000000e-03,  2.26000000e-02,  6.44000000e-02,
+        #     -4.11000000e-02, -6.13000000e-02, -1.15800000e-01,  5.22000000e-02,
+        #      9.72000000e-02, -1.45900000e-01, -1.66000000e-01,  1.28100000e-01,
+        #      1.58000000e-01, -4.05929424e-02, -5.45067608e-01, -3.89900237e-01,
+        #      5.50662816e-01, -4.14984345e-01,  1.20059617e-01,  2.54735425e-02,
+        #     -8.30087289e-02, -7.74564892e-02,  5.88614494e-03, -7.19503760e-02,
+        #     -1.18519031e-01,
         # ])
-
-        # obs = np.array([
-        #     -1.59406548e-04, -2.59802181e-04,  1.87091297e-02, -7.99350006e-04,
-        #      7.33400934e-04, -1.76898812e-04, -1.12909066e-02,  1.41172010e-02,
-        #     -9.99836597e-01,  0.00000000e+00,  0.00000000e+00,  0.00000000e+00,
-        #      3.39348763e-02,  1.26848114e-03, -2.30620033e-03,  4.23359834e-02,
-        #     -1.34518350e-02, -3.22518668e-02, -9.34725201e-02, -1.72445455e-02,
-        #      1.11695999e-01,  1.28602737e-01, -1.06356019e-01, -7.82326402e-02,
-        #      6.48760120e-04,  3.39452899e-03,  2.24570627e-03, -8.37928557e-04,
-        #     -6.21068738e-02, -8.76936167e-02,  7.12144077e-02,  1.05473384e-01,
-        #     -1.15727656e-01, -1.36240005e-01,  1.22187212e-01,  1.46895304e-01,
-        #     -8.28574747e-02, -7.22911730e-02,  8.63198936e-02,  3.34160626e-01,
-        #      2.54687201e-02, -3.45593803e-02,  3.19603980e-01,  1.68863952e-01,
-        #     -8.14546943e-01, -8.76762331e-01,  7.57133424e-01,  4.21751499e-01,
-        # ])
+        # if static_obs.shape[0] == obs.shape[0]:
+        #     obs = static_obs.copy()
 
         return obs
 

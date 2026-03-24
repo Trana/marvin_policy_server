@@ -57,8 +57,18 @@ class MarvinPolicyServer(Node):
         self.declare_parameter('activation_ramp_duration', 1.0)    # seconds to smoothly ramp in
         self.declare_parameter('deactivation_ramp_duration', 1.0)  # seconds to smoothly ramp out
         self.declare_parameter('release_after_deactivate', True)   # if True, stop publishing after ramp-down
+        self.declare_parameter('joy_topic', '/joy')
+        self.declare_parameter('joint_states_topic', '/joint_states')
+        self.declare_parameter('imu_topic', '/imu')
+        self.declare_parameter('command_topic', 'marvin_joint_controller/commands')
+        self.declare_parameter('set_active_service_name', 'set_active')
 
         self._logger = self.get_logger()
+        self._joy_topic = str(self.get_parameter('joy_topic').value)
+        self._joint_states_topic = str(self.get_parameter('joint_states_topic').value)
+        self._imu_topic = str(self.get_parameter('imu_topic').value)
+        self._command_topic = str(self.get_parameter('command_topic').value)
+        self._set_active_service_name = str(self.get_parameter('set_active_service_name').value)
         
         # Sensor QoS (BestEffort, depth=1)
         sensor_qos = qos_profile_sensor_data  # built-in: BestEffort + KeepLast(10); we’ll shrink depth below
@@ -81,7 +91,7 @@ class MarvinPolicyServer(Node):
 
         self._joy_subscription = self.create_subscription(
             Joy,
-            '/joy',
+            self._joy_topic,
             self._joy_callback,
             qos_profile=10
         )
@@ -94,7 +104,7 @@ class MarvinPolicyServer(Node):
         )
 
         # Publisher (use cmd_qos)
-        self._joint_publisher = self.create_publisher(Float64MultiArray, 'marvin_joint_controller/commands', qos_profile=cmd_qos)
+        self._joint_publisher = self.create_publisher(Float64MultiArray, self._command_topic, qos_profile=cmd_qos)
         # self._joint_publisher = self.create_publisher(JointState, 'isaac_joint_commands', qos_profile=sim_qos_profile)
 
         # Subscriptions (direct, store latest messages)
@@ -103,13 +113,13 @@ class MarvinPolicyServer(Node):
 
         self._joint_state_sub = self.create_subscription(
             JointState,
-            '/joint_states',
+            self._joint_states_topic,
             self._joint_state_cb,
             qos_profile=sensor_qos
         )
         self._imu_sub = self.create_subscription(
             Imu,
-            '/imu',
+            self._imu_topic,
             self._imu_cb,
             qos_profile=sensor_qos
         )
@@ -137,12 +147,15 @@ class MarvinPolicyServer(Node):
         env_loader = EnvConfigLoader(env_path)
         self.joint_names = env_loader.get_joint_names()
         self.default_pos = env_loader.get_default_joint_positions()
+        history_len = env_loader.get_action_history_length()
 
         # --- Modular components ---
         self._obs_builder = ObservationBuilder(self.joint_names)
+        action_dim = len(self.joint_names)
+        action_history = np.zeros((history_len, action_dim), dtype=np.float64)
         self._obs_state = ObservationState(
             lin_vel_b=np.zeros(3),
-            previous_action=np.zeros(len(self.joint_names)),
+            action_history=action_history,
             default_pos=self.default_pos.copy(),
         )
         decimation = 4  # original value
@@ -152,10 +165,15 @@ class MarvinPolicyServer(Node):
             deactivation_ramp_duration=float(self.get_parameter('deactivation_ramp_duration').value),
             release_after_deactivate=bool(self.get_parameter('release_after_deactivate').value),
         ), logger=self.get_logger())
-        self._set_active_srv = self.create_service(SetBool, 'set_active', self._set_active_cb)
+        self._set_active_srv = self.create_service(SetBool, self._set_active_service_name, self._set_active_cb)
         self.action = np.zeros(len(self.joint_names))
-        self._previous_action = self._obs_state.previous_action
-        self._logger.info("Initializing MarvinController (inactive by default; call /marvin_controller/set_active to enable)")
+        self._nan_action_warned = False
+        self._logger.info(
+            "Initializing MarvinController (inactive by default). "
+            f"joy_topic={self._joy_topic}, joint_states_topic={self._joint_states_topic}, "
+            f"imu_topic={self._imu_topic}, command_topic={self._command_topic}, "
+            f"set_active_service_name={self._set_active_service_name}"
+        )
 
     def _set_active_cb(self, request, response):
         """Handle SetBool to enable/disable policy output.
@@ -183,9 +201,9 @@ class MarvinPolicyServer(Node):
             return (pos_max * value) if value >= 0.0 else (abs(neg_max) * value)
         # Map axes to Twist fields based on your config
         # Apply deadband at 0.06 to filter stick noise
-        linear_x = _scale_axis(_apply_deadband(msg.axes[1]), -2.0, 3.0)
-        angular_z = _scale_axis(_apply_deadband(msg.axes[0]), -2.0, 2.0)
-        strafe_y = _scale_axis(_apply_deadband(msg.axes[3], 0.13), -1.5, 1.5)  # Right stick left/right (yaw/strafe)
+        linear_x = _scale_axis(_apply_deadband(msg.axes[1]), -1.0, 1.0)
+        angular_z = _scale_axis(_apply_deadband(msg.axes[0]), -1.0, 1.0)
+        strafe_y = _scale_axis(_apply_deadband(msg.axes[3], 0.13), -1.0, 1.0)  # Right stick left/right (yaw/strafe)
 
         twist.linear.x = linear_x
         twist.angular.z = angular_z
@@ -246,15 +264,18 @@ class MarvinPolicyServer(Node):
 
         # Build observation via modular builder
         obs = self._obs_builder.build(joint_state, imu, self._cmd_vel, self._dt, self._obs_state)
-        self._logger.info(f"obs : {obs}")
+        # self._logger.info(f"obs : {obs}")
         ang_vel_b_str = np.array2string(obs[3:6], precision=4, suppress_small=True)
         # self.get_logger().info(f"ang_vel_b: {ang_vel_b_str}")
 
         # Run policy (decimated)
         self.action = self._policy_runner.step(obs)
+        self.action = np.clip(self.action, -10.0, 10.0)
         # self._logger.info(f"Policy action: {self.action}")
         # Link previous action reference for legacy observation method compatibility
-        self._obs_state.previous_action = self._policy_runner.previous_action
+        self._obs_state.action_history[:-1] = self._obs_state.action_history[1:]
+        self._obs_state.action_history[-1] = self._policy_runner.current_action
+        self._logger.info(f"self._obs_state.action_history : {self._obs_state.action_history}")
 
         # Compute ramp factor if within activation ramp window
         ramp_factor = self._activation_mgr.compute_activation_factor(now_time)
