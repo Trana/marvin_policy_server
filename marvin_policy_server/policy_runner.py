@@ -22,9 +22,14 @@ class PolicyRunner:
         self.previous_action = np.zeros(action_dim)
         self.current_action = np.zeros(action_dim)
 
-    def step(self, obs: np.ndarray):
-        """Maybe run policy depending on decimation; always increments counter."""
-        if self.counter % self.cfg.decimation == 0:
+    def should_infer(self) -> bool:
+        return self.counter % self.cfg.decimation == 0
+
+    def step(self, obs: np.ndarray | None):
+        """Advance one control tick, running policy only on decimated inference ticks."""
+        if self.should_infer():
+            if obs is None:
+                raise ValueError("Policy observation is required on inference ticks")
             with torch.no_grad():
                 t_obs = torch.from_numpy(obs).view(1, -1).float()
                 act = self.policy(t_obs).detach().view(-1).cpu().numpy()

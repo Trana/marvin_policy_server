@@ -11,6 +11,7 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
+from marvin_trace_msgs.msg import TracedFloat64MultiArray
 
 
 @dataclass
@@ -40,6 +41,9 @@ class DelayTestNode(Node):
         super().__init__("marvin_delay_test")
 
         self.declare_parameter("command_topic", "marvin_joint_controller/commands")
+        self.declare_parameter("traced_command_topic", "marvin_joint_controller/commands_traced")
+        self.declare_parameter("publish_legacy_commands", True)
+        self.declare_parameter("publish_traced_commands", True)
         self.declare_parameter("joint_states_topic", "/joint_states")
         self.declare_parameter("joint_names", [""])
         self.declare_parameter("joint_names_csv", "")
@@ -60,7 +64,15 @@ class DelayTestNode(Node):
         self.declare_parameter("csv_path", "")
 
         self.command_topic = self.get_parameter("command_topic").value
+        self.traced_command_topic = self.get_parameter("traced_command_topic").value
+        self.publish_legacy_commands = bool(self.get_parameter("publish_legacy_commands").value)
+        self.publish_traced_commands = bool(self.get_parameter("publish_traced_commands").value)
         self.joint_states_topic = self.get_parameter("joint_states_topic").value
+        if not self.publish_legacy_commands and not self.publish_traced_commands:
+            self.get_logger().warn(
+                "Both publish_legacy_commands and publish_traced_commands are false. Enabling legacy publishing."
+            )
+            self.publish_legacy_commands = True
         raw_joint_names = list(self.get_parameter("joint_names").value)
         joint_names_csv = self.get_parameter("joint_names_csv").value.strip()
         if joint_names_csv:
@@ -109,8 +121,14 @@ class DelayTestNode(Node):
                     f"target_joint '{name}' not found in joint_names"
                 ) from exc
 
-        self.cmd_pub = self.create_publisher(Float64MultiArray, self.command_topic, 10)
+        self.cmd_pub = None
+        self.cmd_pub_traced = None
+        if self.publish_legacy_commands:
+            self.cmd_pub = self.create_publisher(Float64MultiArray, self.command_topic, 10)
+        if self.publish_traced_commands:
+            self.cmd_pub_traced = self.create_publisher(TracedFloat64MultiArray, self.traced_command_topic, 10)
         self.js_sub = self.create_subscription(JointState, self.joint_states_topic, self.on_joint_state, 50)
+        self.trace_id = 0
 
         self.current_cmd = self.value_a
         self.last_toggle_time = time.monotonic()
@@ -130,6 +148,7 @@ class DelayTestNode(Node):
 
         self.get_logger().info(
             f"Delay test starting (command_topic={self.command_topic}, "
+            f"traced_command_topic={self.traced_command_topic}, "
             f"joint_states_topic={self.joint_states_topic}, "
             f"target_joints={self.target_joints})"
         )
@@ -154,11 +173,20 @@ class DelayTestNode(Node):
                 f"[step {self.step_idx}/{self.num_steps}] cmd -> {self.current_cmd:.4f} rad"
             )
 
-        msg = Float64MultiArray()
-        msg.data = [0.0] * len(self.joint_names)
+        command_values = [0.0] * len(self.joint_names)
         for name, idx in self.target_indices.items():
-            msg.data[idx] = float(self.current_cmd)
-        self.cmd_pub.publish(msg)
+            command_values[idx] = float(self.current_cmd)
+        if self.publish_legacy_commands and self.cmd_pub is not None:
+            msg = Float64MultiArray()
+            msg.data = command_values
+            self.cmd_pub.publish(msg)
+        if self.publish_traced_commands and self.cmd_pub_traced is not None:
+            self.trace_id += 1
+            msg_traced = TracedFloat64MultiArray()
+            msg_traced.stamp = self.get_clock().now().to_msg()
+            msg_traced.trace_id = self.trace_id
+            msg_traced.data = command_values
+            self.cmd_pub_traced.publish(msg_traced)
 
         if self.pending and (now - self.t_cmd) >= self.motion_timeout_s:
             for name in self.target_joints:

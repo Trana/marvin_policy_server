@@ -6,9 +6,8 @@ Original logic is preserved; only structured into functions/classes.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import List, Sequence
+from typing import Sequence
 import numpy as np
-from rclpy.logging import get_logger
 from sensor_msgs.msg import JointState, Imu  # type: ignore
 
 
@@ -29,11 +28,29 @@ def quat_to_rot_matrix(quat: np.ndarray) -> np.ndarray:
         dtype=np.float64,
     )
 
+
 @dataclass
 class ObservationState:
     lin_vel_b: np.ndarray  # shape (3,)
     action_history: np.ndarray  # shape (history_len, action_dim)
     default_pos: np.ndarray  # shape (12,)
+    base_lin_vel_history: np.ndarray  # shape (H_lin, 3)
+    base_ang_vel_history: np.ndarray  # shape (H_ang, 3)
+    projected_gravity_history: np.ndarray  # shape (H_grav, 3)
+    velocity_commands_history: np.ndarray  # shape (H_cmd, 3)
+    joint_pos_history: np.ndarray  # shape (H_pos, 12)
+    joint_vel_history: np.ndarray  # shape (H_vel, 12)
+
+
+@dataclass
+class ObservationConfig:
+    base_lin_vel_history_len: int
+    base_ang_vel_history_len: int
+    projected_gravity_history_len: int
+    velocity_commands_history_len: int
+    joint_pos_history_len: int
+    joint_vel_history_len: int
+    actions_history_len: int
 
 
 class ObservationBuilder:
@@ -41,27 +58,67 @@ class ObservationBuilder:
 
     The integration of linear acceleration (velocity += acc * dt).
     """
-    def __init__(self, joint_names: Sequence[str]):
+    def __init__(self, joint_names: Sequence[str], cfg: ObservationConfig):
         self.joint_names = list(joint_names)
+        self.cfg = cfg
+        self.expected_obs_dim = (
+            3 * self.cfg.base_lin_vel_history_len
+            + 3 * self.cfg.base_ang_vel_history_len
+            + 3 * self.cfg.projected_gravity_history_len
+            + 3 * self.cfg.velocity_commands_history_len
+            + len(self.joint_names) * self.cfg.joint_pos_history_len
+            + len(self.joint_names) * self.cfg.joint_vel_history_len
+            + len(self.joint_names) * self.cfg.actions_history_len
+        )
 
-    def build(self, joint_state: JointState, imu: Imu, cmd_vel, dt: float, obs_state: ObservationState) -> np.ndarray:       
+    @staticmethod
+    def _push_history(history: np.ndarray, value: np.ndarray) -> None:
+        """Push a single vector into a fixed-size history [oldest ... newest]."""
+        if history.shape[0] <= 1:
+            history[0] = value
+            return
+        if np.isnan(history).all():
+            history[:] = value
+            return
+        history[:-1] = history[1:]
+        history[-1] = value
+
+    def build(
+        self,
+        joint_state: JointState,
+        imu: Imu,
+        cmd_vel,
+        dt: float,
+        obs_state: ObservationState,
+        *,
+        command_override: np.ndarray | None = None,
+        imu_override: dict[str, np.ndarray] | None = None,
+        base_lin_vel_override: np.ndarray | None = None,
+        joint_position_relative_override: np.ndarray | None = None,
+        joint_velocity_override: np.ndarray | None = None,
+    ) -> np.ndarray:
 
         # Quaternion extraction
         quat_I = imu.orientation
         quat_array = np.array([quat_I.w, quat_I.x, quat_I.y, quat_I.z])
         R_BI = quat_to_rot_matrix(quat_array).T
 
-        # Linear acceleration (body)
         lin_acc_b = np.array([
             imu.linear_acceleration.x,
             imu.linear_acceleration.y,
             imu.linear_acceleration.z,
         ])
-        # Integrate velocity in-place
-        logger = get_logger(__name__)
-        
-        prev_lin_vel = obs_state.lin_vel_b.copy()
-        obs_state.lin_vel_b[:] = lin_acc_b * dt + obs_state.lin_vel_b
+        if base_lin_vel_override is not None:
+            base_lin_vel = np.asarray(base_lin_vel_override, dtype=np.float64)
+            if base_lin_vel.shape != (3,):
+                raise ValueError(f"base_lin_vel_override must have shape (3,), got {base_lin_vel.shape}")
+            obs_state.lin_vel_b[:] = base_lin_vel
+        elif imu_override is not None:
+            base_lin_vel = np.asarray(imu_override["base_lin_vel"], dtype=np.float64)
+            obs_state.lin_vel_b[:] = base_lin_vel
+        else:
+            obs_state.lin_vel_b[:] = lin_acc_b * dt + obs_state.lin_vel_b
+            base_lin_vel = obs_state.lin_vel_b
         # logger.info(
         #     f"lin_acc_b={np.array2string(lin_acc_b, precision=6)}, "
         #     f"dt={dt}, "
@@ -87,76 +144,92 @@ class ObservationBuilder:
         #     [0.0, 0.0, 0.0],
         #     dtype=np.float64,
         # )
+        if obs_state.base_lin_vel_history.shape[0] > 0:
+            self._push_history(obs_state.base_lin_vel_history, base_lin_vel)
         
 
-        ang_vel_b = np.array([
-            imu.angular_velocity.x,
-            imu.angular_velocity.y,
-            imu.angular_velocity.z,
-        ])
+        ang_vel_b = (
+            np.array([
+                imu.angular_velocity.x,
+                imu.angular_velocity.y,
+                imu.angular_velocity.z,
+            ])
+            if imu_override is None
+            else np.asarray(imu_override["base_ang_vel"], dtype=np.float64)
+        )
         # ang_vel_b = np.array([0.0, 0.0, 0.0])        
         # ang_vel_b = np.array([imu.angular_velocity.x,
         #     imu.angular_velocity.y,
         #     0.0,
         # ])
 
-        gravity_b = np.matmul(R_BI, np.array([0.0, 0.0, -1.0]))
+        gravity_b = (
+            np.matmul(R_BI, np.array([0.0, 0.0, -1.0]))
+            if imu_override is None
+            else np.asarray(imu_override["projected_gravity"], dtype=np.float64)
+        )
 
-        cmd_vec = [cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z]
+        cmd_vec = (
+            np.array([cmd_vel.linear.x, cmd_vel.linear.y, cmd_vel.angular.z], dtype=np.float64)
+            if command_override is None
+            else np.asarray(command_override, dtype=np.float64)
+        )
         # cmd_vec = np.where(np.abs(cmd_vec) < 0.2, 0.0, cmd_vec)
         # cmd_vec = [0.0, 0.0, 0.0]
 
 
-        action_dim = len(self.joint_names)
-        history_len = obs_state.action_history.shape[0]
-        obs = np.zeros(33 + action_dim * history_len)
-        # IMPORTANT ZEROING OUT LIN VELOCITY BECAUSE OF DRIFT
-        # obs[:3] = obs_state.lin_vel_b #[0.0, 0.0, 0.0]  # obs_state.lin_vel_b
-        # Linear acceleration (body) as observation
-        # obs[3:6] = lin_acc_b #[0.0, 0.0, 0.0] 
-        obs[:3] = ang_vel_b
-        obs[3:6] = gravity_b
-        obs[6:9] = cmd_vec
-
-        current_joint_pos = np.zeros(12)
-        current_joint_vel = np.zeros(12)
+        current_joint_pos = np.zeros(len(self.joint_names), dtype=np.float64)
+        current_joint_vel = np.zeros(len(self.joint_names), dtype=np.float64)
         for i, name in enumerate(self.joint_names):
             if name in joint_state.name:
                 idx = joint_state.name.index(name)
                 current_joint_pos[i] = joint_state.position[idx]
                 current_joint_vel[i] = joint_state.velocity[idx]
+        if joint_velocity_override is not None:
+            override = np.asarray(joint_velocity_override, dtype=np.float64)
+            if override.shape != current_joint_vel.shape:
+                raise ValueError(
+                    f"joint_velocity_override shape {override.shape} does not match {current_joint_vel.shape}"
+                )
+            current_joint_vel[:] = override
 
-        obs[9:21] = current_joint_pos - obs_state.default_pos
-        # diff = current_joint_pos - obs_state.default_pos
-        # print('pos diff:', np.array2string(diff, precision=6, separator=', '))
-        obs[21:33] = current_joint_vel
-        obs[33:33 + action_dim * history_len] = obs_state.action_history.reshape(-1)
-        
-        # ang_vel_b_str = np.array2string(ang_vel_b, precision=4, suppress_small=True)
-        # logger.info('obs: %s' % obs)
-        
-        # Example observation vectors for reference/debugging:
-        # static_obs = np.array([
-        #     -3.18336813e-03, -2.36710650e-04,  5.55757375e-04, -3.07860186e-02,
-        #     -2.73388228e-02, -9.99152045e-01,  0.00000000e+00,  0.00000000e+00,
-        #      0.00000000e+00,  5.45000000e-02, -2.63600000e-01, -1.41000000e-01,
-        #      2.96300000e-01, -2.20105361e-01,  3.14952516e-02,  1.43105361e-01,
-        #     -1.94395252e-01,  1.98802449e-01,  1.78202449e-01, -2.43202449e-01,
-        #     -8.73024488e-02, -9.20000000e-03,  2.26000000e-02,  6.44000000e-02,
-        #     -4.11000000e-02, -6.13000000e-02, -1.15800000e-01,  5.22000000e-02,
-        #      9.72000000e-02, -1.45900000e-01, -1.66000000e-01,  1.28100000e-01,
-        #      1.58000000e-01, -4.05929424e-02, -5.45067608e-01, -3.89900237e-01,
-        #      5.50662816e-01, -4.14984345e-01,  1.20059617e-01,  2.54735425e-02,
-        #     -8.30087289e-02, -7.74564892e-02,  5.88614494e-03, -7.19503760e-02,
-        #     -1.18519031e-01,
-        # ])
-        # if static_obs.shape[0] == obs.shape[0]:
-        #     obs = static_obs.copy()
+        joint_pos_rel = current_joint_pos - obs_state.default_pos
+        if joint_position_relative_override is not None:
+            override = np.asarray(
+                joint_position_relative_override,
+                dtype=np.float64,
+            )
+            if override.shape != joint_pos_rel.shape:
+                raise ValueError(
+                    'joint_position_relative_override shape '
+                    f'{override.shape} does not match {joint_pos_rel.shape}'
+                )
+            joint_pos_rel[:] = override
 
+        # Keep history order aligned with Isaac Lab flattening:
+        # [oldest ... newest] for each term.
+        self._push_history(obs_state.base_ang_vel_history, ang_vel_b)
+        self._push_history(obs_state.projected_gravity_history, gravity_b)
+        self._push_history(obs_state.velocity_commands_history, cmd_vec)
+        self._push_history(obs_state.joint_pos_history, joint_pos_rel)
+        self._push_history(obs_state.joint_vel_history, current_joint_vel)
+
+        obs = np.concatenate(
+            [array.reshape(-1) for array in (
+                obs_state.base_lin_vel_history,
+                obs_state.base_ang_vel_history,
+                obs_state.projected_gravity_history,
+                obs_state.velocity_commands_history,
+                obs_state.joint_pos_history,
+                obs_state.joint_vel_history,
+                obs_state.action_history,
+            ) if array.size > 0]
+        )
         return obs
 
 __all__ = [
     'quat_to_rot_matrix',
     'ObservationBuilder',
-    'ObservationState'
+    'ObservationState',
+    'ObservationConfig',
 ]
