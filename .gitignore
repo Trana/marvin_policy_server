@@ -2,3 +2,15 @@
 __pycache__/
 **/__pycache__/
 *.py[cod]
+
+# Local ROS build products
+/build/
+/install/
+/log/
+
+# Historical local policy copies. The packaged policy.pt, env.yaml, and
+# velocity_estimator.pt remain explicit source-controlled deployment assets.
+/policy/env[0-9]*.yaml
+/policy/policy[0-9]*.pt
+/policy/policy copy.pt
+/policy/old does not stop well/
