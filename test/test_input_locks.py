@@ -1,10 +1,14 @@
 from pathlib import Path
 from types import SimpleNamespace
 import time
+import json
+from uuid import uuid4
 
 import numpy as np
 from geometry_msgs.msg import Twist
-from marvin_policy_interfaces.srv import SetPolicyInputLock
+from marvin_policy_interfaces.srv import SetPolicyInputLock, PolicyControl as PolicyControlService
+from marvin_policy_server.policy_control import PolicyControl
+from marvin_policy_server.operator_permission import OperatorPermission
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import Imu, JointState
 from std_srvs.srv import SetBool
@@ -16,6 +20,7 @@ from marvin_policy_server.observation import ObservationBuilder, ObservationConf
 
 def _server_without_node() -> MarvinPolicyServer:
     server = object.__new__(MarvinPolicyServer)
+    server._operator_permission = OperatorPermission()
     server.joint_names = ["joint_a", "joint_b"]
     server._cmd_vel = Twist()
     server._latest_imu = None
@@ -66,6 +71,26 @@ def _server_without_node() -> MarvinPolicyServer:
     server._safety_limits_enabled = False
     server._safety_limits_loaded = False
     return server
+
+
+def test_typed_policy_control_callback_serializes_arrays_and_tracks_legacy_revision():
+    server = _server_without_node()
+    server._policy_control = PolicyControl(server._observation_status_payload, server._apply_policy_input_lock)
+    state = server._policy_control.state()
+    request = PolicyControlService.Request(
+        action="submit", command_id=str(uuid4()), session_id=state["session_id"],
+        expected_revision=0, control="joint_command", mode="fixed", values=[0.1, 0.2])
+    response = server._policy_control_cb(request, PolicyControlService.Response())
+    assert response.success, response.error_message
+    result = json.loads(response.result_json)
+    assert result["status"] == "applied"
+    assert result["applied"]["values"] == [0.1, 0.2]
+    assert result["applied"]["mode"] == "fixed"
+    assert server._set_policy_input_lock("joint_command", False)[0]
+    assert server._policy_control.revision == 2
+    replay = server._policy_control_cb(request, PolicyControlService.Response())
+    assert json.loads(replay.result_json) == result
+    assert not server._joint_command_output_locked
 
 
 def test_input_lock_callbacks_snapshot_and_release_values() -> None:
@@ -185,8 +210,13 @@ def test_embedded_estimator_auxiliary_outputs_can_be_held() -> None:
             0.11, 0.12, 0.13, 0.14,
             0.8, 0.7, 0.6, 0.5,
         ]),
-        current_foot_positions=lambda: np.arange(12, dtype=np.float64),
+        latest_foot_positions=np.arange(12, dtype=np.float64),
+        latest_result_monotonic=time.monotonic(),
     )
+
+    server._policy_runner.latest_result_monotonic = time.monotonic() - 1
+    assert server._set_policy_input_lock("estimator_fk", True)[0] is False
+    server._policy_runner.latest_result_monotonic = time.monotonic()
 
     assert server._set_policy_input_lock("estimator_fk", True)[0] is True
     assert server._set_policy_input_lock(
@@ -205,19 +235,38 @@ def test_embedded_estimator_auxiliary_outputs_can_be_held() -> None:
         [0.8, 0.7, 0.6, 0.5],
     )
 
-    assert server._set_policy_input_lock(
-        "estimator_fk", False
-    )[0] is True
-    assert server._set_policy_input_lock(
-        "estimator_foot_height", False
-    )[0] is True
-    assert server._set_policy_input_lock(
-        "estimator_contact", False
-    )[0] is True
+
+    for name in ('estimator_fk', 'estimator_foot_height', 'estimator_contact'):
+        assert server._set_policy_input_lock(name, False)[0]
     assert server._locked_estimator_fk is None
     assert server._locked_estimator_foot_height is None
     assert server._locked_estimator_contact is None
 
+
+def test_status_reads_never_evaluate_estimator_and_report_missing_snapshot():
+    server = _server_without_node()
+    server._concurrent_policy_enabled = True
+
+    def forbidden():
+        raise AssertionError('Status must not evaluate the estimator')
+
+    server._policy_runner = SimpleNamespace(
+        supports_velocity_override=True, latest_estimated_state=None,
+        latest_foot_positions=None, latest_result_monotonic=None,
+        history=SimpleNamespace(count=0, ready=False), current_foot_positions=forbidden,
+    )
+    payload = server._observation_status_payload()
+    assert not payload['locks']['estimator_fk']['available']
+    assert not payload['concurrent_policy']['snapshot_available']
+    assert payload['concurrent_policy']['snapshot_age_seconds'] is None
+    assert not server._set_policy_input_lock('estimator_fk', True)[0]
+    server._policy_runner.latest_foot_positions = np.arange(12, dtype=float)
+    server._policy_runner.latest_result_monotonic = time.monotonic()
+    for _ in range(5):
+        payload = server._observation_status_payload()
+        assert payload['locks']['estimator_fk']['live_values'] == list(range(12))
+        assert payload['concurrent_policy']['snapshot_available']
+        assert payload['concurrent_policy']['snapshot_age_seconds'] >= 0
 
 def test_observation_builder_uses_joint_velocity_override() -> None:
     cfg = ObservationConfig(

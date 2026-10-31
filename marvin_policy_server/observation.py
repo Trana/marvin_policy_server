@@ -6,9 +6,11 @@ Original logic is preserved; only structured into functions/classes.
 """
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, TYPE_CHECKING
 import numpy as np
-from sensor_msgs.msg import JointState, Imu  # type: ignore
+
+if TYPE_CHECKING:
+    from sensor_msgs.msg import JointState, Imu
 
 
 def quat_to_rot_matrix(quat: np.ndarray) -> np.ndarray:
@@ -54,7 +56,7 @@ class ObservationConfig:
 
 
 class ObservationBuilder:
-    """Creates policy observations from ROS messages.
+    """Create observations from ROS messages or immutable sensor snapshots.
 
     The integration of linear acceleration (velocity += acc * dt).
     """

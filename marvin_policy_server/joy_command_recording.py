@@ -42,7 +42,7 @@ def policy_velocity_command_from_axes(axes: Sequence[float]) -> tuple[float, flo
 
     Returns forward velocity, lateral velocity, and yaw rate.
     """
-    linear_x = _scale_axis(_deadband(_axis(axes, 1), 0.06), -1.0, 1.5)
+    linear_x = _scale_axis(_deadband(_axis(axes, 1), 0.06), -1.0, 1.0)
     linear_y = _scale_axis(_deadband(_axis(axes, 3), 0.13), -1.0, 1.0)
     angular_z = _scale_axis(_deadband(_axis(axes, 0), 0.06), -1.0, 1.0)
     return linear_x, linear_y, angular_z
@@ -106,7 +106,7 @@ class JoyCommandSessionWriter:
             },
             'command_mapping': {
                 'linear_x': (
-                    'axis[1], deadband=0.06, negative_scale=1.0, positive_scale=1.5'
+                    'axis[1], deadband=0.06, negative_scale=1.0, positive_scale=1.0'
                 ),
                 'linear_y': (
                     'axis[3], deadband=0.13, negative_scale=1.0, positive_scale=1.0'

@@ -22,24 +22,31 @@ import io
 import json
 import os
 import time
+from array import array
 from pathlib import Path
+from .artifact_identity import artifact_identity
 import yaml
 from ament_index_python.packages import get_package_share_directory
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.clock import Clock, ClockType
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import JointState, Imu 
-from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import Float64MultiArray, String, Bool
 from std_srvs.srv import SetBool, Trigger
-from marvin_policy_interfaces.srv import SetPolicyInputLock
+from marvin_policy_interfaces.srv import SetPolicyInputLock, PolicyControl as PolicyControlService
 from marvin_trace_msgs.msg import TracedFloat64MultiArray, TraceEvent
+from runtime_interfaces.msg import ExecutorCommand
+from runtime_interfaces.srv import PrepareExecution
+from .execution_preparation import PolicyPreparation
 # from message_filters import Subscriber, TimeSynchronizer, ApproximateTimeSynchronizer
 from sensor_msgs.msg import Joy
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 
 # New modular imports
-from .activation_manager import ActivationManager, ActivationConfig
+from .activation_manager import ActivationManager, ActivationConfig, ActivationState
 from .action_history_feedback import (
     VALID_ACTION_HISTORY_FEEDBACK_MODES,
     action_history_feedback,
@@ -49,16 +56,30 @@ from .concurrent_policy import ConcurrentPolicyRunner, load_concurrent_policy_ma
 from .observation import ObservationBuilder, ObservationConfig, ObservationState, quat_to_rot_matrix  # noqa: F401 (quat reuse)
 from .policy_runner import PolicyRunner, PolicyRunnerConfig
 from .env_config_loader import EnvConfigLoader
+from .sim_timing import simulation_gate
 from .joy_command_recording import policy_velocity_command_from_axes
 from .joint_position_filter import ExponentialJointPositionFilter
 from .velocity_estimator import VelocityEstimator
 from .velocity_estimator_diagnostics import VelocityEstimatorDiagnosticRecorder
 from .velocity_estimator_features import VelocityEstimatorFeatureBuilder
 from .velocity_estimator_shadow import VelocityEstimatorShadowRecorder
+from .policy_control import PolicyControl, PolicyControlError
+from .timing import Timing
+from .input_timing import InputTiming
+from .inference_schedule import InferenceSchedule
+from .inference_inputs import runner_inputs
+from .inference_process import InferenceProcess
+from .async_policy import create_runner_task
+from .command_clip_cache import CommandClipCache
+from .policy_node import PolicyNode
+from .concurrent_policy.optimized import optimize_policy
+from copy import deepcopy
+from .encoder_snapshot import decode_snapshot
+from .operator_permission import OperatorPermission
 
 
 
-class MarvinPolicyServer(Node):
+class MarvinPolicyServer(PolicyNode):
     """Fullbody controller for Marvin robot.
     
     This ROS 2 node subscribes to velocity commands and synchronized joint/IMU
@@ -66,19 +87,39 @@ class MarvinPolicyServer(Node):
     joint commands for controlling the Marvin robot's movements.
     """
 
-    def __init__(self):
+    def __init__(self, *, native_io=False):
         """Initialize the marvin controller node."""
         super().__init__('marvin_policy_server')
+        # Only the native adapter supplies this internal option. Normal launch
+        # still owns its ROS sensors, publication timer and command publishers.
+        self._native_io = bool(native_io)
+        self.declare_parameter('execution_gateway', False)
+        self._execution_gateway = bool(self.get_parameter('execution_gateway').value)
+        self._policy_control = PolicyControl(self._observation_status_payload, self._apply_policy_input_lock)
+        self._policy_control_service = self.create_service(
+            PolicyControlService, "policy_control", self._policy_control_cb)
 
         # Declare and set parameters
         self.declare_parameter('publish_period_ms', 5)
+        # Opt-in until matching simulation and physical acceptance checks pass.
+        self.declare_parameter('async_inference', False)
+        self.declare_parameter('inference_max_age_ms', 100.0)
+        self.declare_parameter('compact_estimator', False)
         self.declare_parameter('policy_path', 'policy/policy.pt')
         self.declare_parameter('env_path', 'policy/env.yaml')
         self.declare_parameter('activation_ramp_duration', 1.0)    # seconds to smoothly ramp in
         self.declare_parameter('deactivation_ramp_duration', 1.0)  # seconds to smoothly ramp out
         self.declare_parameter('release_after_deactivate', True)   # if True, stop publishing after ramp-down
         self.declare_parameter('joy_topic', '/joy')
+        self.declare_parameter('operator_input_required', False)
+        self._operator_permission = OperatorPermission(
+            required=bool(self.get_parameter('operator_input_required').value))
+        self._operator_permission_subscription = self.create_subscription(
+            Bool, '/operator/motion_permitted',
+            lambda msg: self._operator_permission.update(msg.data), 1)
         self.declare_parameter('joint_states_topic', '/joint_states')
+        # Explicit same-host/boot diagnostic opt-in; empty preserves normal input.
+        self.declare_parameter('same_host_dynamic_joint_states_topic', '')
         self.declare_parameter('imu_topic', '/imu')
         self.declare_parameter('base_lin_vel_source', 'imu_integration')
         self.declare_parameter('odometry_topic', '/isaac_odometry')
@@ -96,10 +137,13 @@ class MarvinPolicyServer(Node):
         self.declare_parameter('velocity_estimator_shadow_summary_interval_samples', 250)
         self.declare_parameter('velocity_estimator_diagnostic_log_dir', '')
         self.declare_parameter('velocity_estimator_add_gravity_to_imu_acceleration', False)
+        self.declare_parameter('velocity_estimator_imu_acceleration_scale', 1.0)
         self.declare_parameter('velocity_estimator_gravity_magnitude', 9.81)
         self.declare_parameter('command_topic', 'marvin_joint_controller/commands')
         self.declare_parameter('traced_command_topic', 'marvin_joint_controller/commands_traced')
-        self.declare_parameter('publish_legacy_commands', True)
+        self.declare_parameter('publish_legacy_commands', False)
+        self.declare_parameter('tracing_mode', os.environ.get('MARVIN_TRACING_MODE', 'metrics'))
+        self.declare_parameter('trace_capture_seconds', float(os.environ.get('MARVIN_TRACE_CAPTURE_SECONDS', '30')))
         self.declare_parameter('publish_traced_commands', True)
         self.declare_parameter('trace_event_topic', '/trace/events')
         self.declare_parameter('publish_trace_events', True)
@@ -122,6 +166,8 @@ class MarvinPolicyServer(Node):
         self._logger = self.get_logger()
         self._joy_topic = str(self.get_parameter('joy_topic').value)
         self._joint_states_topic = str(self.get_parameter('joint_states_topic').value)
+        self._dynamic_joint_states_topic = str(
+            self.get_parameter('same_host_dynamic_joint_states_topic').value)
         self._imu_topic = str(self.get_parameter('imu_topic').value)
         self._base_lin_vel_source = str(self.get_parameter('base_lin_vel_source').value).strip().lower()
         self._odometry_topic = str(self.get_parameter('odometry_topic').value).strip()
@@ -150,6 +196,9 @@ class MarvinPolicyServer(Node):
         )
         self._velocity_estimator_gravity_magnitude = float(
             self.get_parameter('velocity_estimator_gravity_magnitude').value
+        )
+        self._velocity_estimator_imu_acceleration_scale = float(
+            self.get_parameter('velocity_estimator_imu_acceleration_scale').value
         )
         if self._base_lin_vel_source not in {"imu_integration", "odometry", "estimator"}:
             raise ValueError(
@@ -242,7 +291,7 @@ class MarvinPolicyServer(Node):
             depth=1
         )
         trace_event_qos = QoSProfile(
-            reliability=ReliabilityPolicy.RELIABLE,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
             durability=DurabilityPolicy.VOLATILE,
             history=HistoryPolicy.KEEP_LAST,
             depth=50,
@@ -274,13 +323,13 @@ class MarvinPolicyServer(Node):
         self._joint_publisher_traced = None
         self._trace_event_publisher = None
         self._velocity_estimator_shadow_publisher = None
-        if self._publish_legacy_commands:
+        if self._publish_legacy_commands and not self._native_io and not self._execution_gateway:
             self._joint_publisher = self.create_publisher(Float64MultiArray, self._command_topic, qos_profile=cmd_qos)
-        if self._publish_traced_commands:
+        if self._publish_traced_commands and not self._native_io and not self._execution_gateway:
             self._joint_publisher_traced = self.create_publisher(
                 TracedFloat64MultiArray, self._traced_command_topic, qos_profile=cmd_qos
             )
-        if self._publish_trace_events:
+        if self._publish_trace_events and self.get_parameter('tracing_mode').value == 'capture':
             self._trace_event_publisher = self.create_publisher(
                 TraceEvent, self._trace_event_topic, qos_profile=trace_event_qos
             )
@@ -301,18 +350,26 @@ class MarvinPolicyServer(Node):
         self._odometry_validation_error = None
         self._base_lin_vel_warned = False
 
-        self._joint_state_sub = self.create_subscription(
-            JointState,
-            self._joint_states_topic,
-            self._joint_state_cb,
-            qos_profile=sensor_qos
-        )
-        self._imu_sub = self.create_subscription(
-            Imu,
-            self._imu_topic,
-            self._imu_cb,
-            qos_profile=sensor_qos
-        )
+        self._joint_state_sub = None
+        self._imu_sub = None
+        if self._native_io:
+            pass  # The native adapter supplies coherent sensor snapshots.
+        elif self._dynamic_joint_states_topic:
+            from control_msgs.msg import DynamicJointState
+            self._joint_state_sub = self.create_subscription(
+                DynamicJointState, self._dynamic_joint_states_topic,
+                self._dynamic_joint_state_cb, qos_profile=sensor_qos)
+        else:
+            self._joint_state_sub = self.create_subscription(
+                JointState, self._joint_states_topic,
+                self._joint_state_cb, qos_profile=sensor_qos)
+        if not self._native_io:
+            self._imu_sub = self.create_subscription(
+                Imu,
+                self._imu_topic,
+                self._imu_cb,
+                qos_profile=sensor_qos
+            )
         self._odometry_sub = None
         if (
             self._base_lin_vel_source == "odometry"
@@ -328,13 +385,24 @@ class MarvinPolicyServer(Node):
 
         # Timer for control loop
         publish_period_ms = self.get_parameter('publish_period_ms').value
-        self._timer = self.create_timer(publish_period_ms / 1000.0, self._timer_tick)
+        self._timer = None
+        if not self._native_io:
+            self._timer = self.create_timer(publish_period_ms / 1000.0, self._timer_tick)
 
         # Load neural network policy
         self.policy_path = self.get_parameter('policy_path').value
+        self._loaded_artifacts = {}
         self.load_policy()
         self._concurrent_policy_manifest = load_concurrent_policy_manifest(Path(self.policy_path))
         self._concurrent_policy_enabled = self._concurrent_policy_manifest is not None
+        if self.get_parameter('compact_estimator').value and not self._concurrent_policy_enabled:
+            raise ValueError('compact_estimator requires an embedded-estimator artifact')
+        if self._concurrent_policy_enabled:
+            self._loaded_artifacts['metadata.json'] = self._concurrent_policy_manifest.loaded_artifact
+            if self.get_parameter('compact_estimator').value:
+                # An explicit request fails startup if numerical validation fails.
+                self.policy = optimize_policy(self.policy, self._concurrent_policy_manifest)
+                self._logger.info('Compact estimator validated against the original artifact.')
         self._policy_input_dim = (
             self._concurrent_policy_manifest.base_observation_count
             if self._concurrent_policy_manifest is not None
@@ -365,13 +433,26 @@ class MarvinPolicyServer(Node):
         self._latest_policy_joint_command = None
         self._last_published_joint_command = None
         self._action_scale = 0.25
-        self._last_tick_time = self.get_clock().now().nanoseconds * 1e-9
-        self._dt = 0.0
         self._stale_warn_count = 0
         
         env_loader = EnvConfigLoader(self._env_path)
         self.joint_names = env_loader.get_joint_names()
+        self._execution_preparation = PolicyPreparation(self.joint_names)
+        self._execution_candidate_publisher = (self.create_publisher(
+            ExecutorCommand, 'execution/policy/commands', qos_profile=cmd_qos)
+            if self._execution_gateway and not self._native_io else None)
+        self.create_service(PrepareExecution, 'prepare_execution', self._prepare_execution)
         self.default_pos = env_loader.get_default_joint_positions()
+        self._sim_release = simulation_gate(env_loader.get_deployment_timing(), self.default_pos,
+            use_sim_time=bool(self.get_parameter('use_sim_time').value), native_io=self._native_io)
+        if self._sim_release is not None:
+            # Timed fitted scenes publish specific force. Readiness validates the
+            # scene contract before inference. Legacy and physical inputs retain
+            # their configured conversion. Both estimator builders use this value.
+            self._velocity_estimator_add_gravity_to_imu_acceleration = False
+            self._sim_identity_subscription = self.create_subscription(String, '/marvin_sim/timing_profile',
+                self._sim_identity, QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL))
+            self._sim_release_publisher = self.create_publisher(String, 'timing/action_release', 10)
         self._safety_min_pos = np.full(len(self.joint_names), -np.inf, dtype=np.float64)
         self._safety_max_pos = np.full(len(self.joint_names), np.inf, dtype=np.float64)
         self._safety_limits_path = self._resolve_package_path(
@@ -458,6 +539,9 @@ class MarvinPolicyServer(Node):
         self._velocity_estimator_error = None
         self._velocity_estimator_shadow_warned = False
         self._configure_velocity_estimator()
+        self._loaded_artifacts['env.yaml'] = env_loader.loaded_artifact
+        if self._velocity_estimator is not None:
+            self._loaded_artifacts['velocity_estimator.pt'] = self._velocity_estimator.loaded_artifact
         self._concurrent_policy_feature_builder = None
         if self._concurrent_policy_enabled:
             self._concurrent_policy_feature_builder = VelocityEstimatorFeatureBuilder(
@@ -467,6 +551,7 @@ class MarvinPolicyServer(Node):
                     self._velocity_estimator_add_gravity_to_imu_acceleration
                 ),
                 gravity_magnitude=self._velocity_estimator_gravity_magnitude,
+                acceleration_scale=self._velocity_estimator_imu_acceleration_scale,
             )
         self._expected_obs_dim = self._obs_builder.expected_obs_dim
         if self._policy_input_dim is not None and self._policy_input_dim != self._expected_obs_dim:
@@ -475,7 +560,8 @@ class MarvinPolicyServer(Node):
                 f"policy_input_dim={self._policy_input_dim}, expected_obs_dim={self._expected_obs_dim}, "
                 f"policy_path={self.policy_path}, env_path={self._env_path}"
             )
-        decimation = 4  # original value
+        decimation = 4  # Legacy runner fallback; node uses explicit deadline decisions.
+        self._inference_schedule = InferenceSchedule()  # 50 Hz, independent of publication
         if self._concurrent_policy_manifest is None:
             self._policy_runner = PolicyRunner(
                 self.policy,
@@ -493,11 +579,34 @@ class MarvinPolicyServer(Node):
                 self._concurrent_policy_manifest,
                 decimation=decimation,
             )
+        self._async_worker = None
+        self._async_pending_ns = None
+        self._async_fault = None
+        self._async_has_action = False
+        self._async_last_clock_ns = None
+        self._async_permission = None
+        self._inference_max_age_ns = int(float(self.get_parameter('inference_max_age_ms').value) * 1e6)
+        if self._inference_max_age_ns <= 0:
+            raise ValueError('inference_max_age_ms must be positive')
+        if self.get_parameter('async_inference').value:
+            if self._native_io:
+                raise ValueError('Native I/O requires async_inference=false; native I/O already separates publication from inference')
+            if self._velocity_estimator is not None:
+                raise ValueError('Async inference currently requires an embedded estimator or no external estimator')
+            self._async_worker = InferenceProcess(create_runner_task, {
+                'policy_path': str(self.policy_path),
+                'policy_sha256': self._loaded_artifacts['policy.pt']['sha256'],
+                'metadata_sha256': self._loaded_artifacts.get('metadata.json', {}).get('sha256'),
+                'compact_estimator': bool(self.get_parameter('compact_estimator').value),
+                'action_count': len(self.joint_names),
+                'observation_count': self._expected_obs_dim,
+            })
         self._activation_mgr = ActivationManager(ActivationConfig(
             activation_ramp_duration=float(self.get_parameter('activation_ramp_duration').value),
             deactivation_ramp_duration=float(self.get_parameter('deactivation_ramp_duration').value),
             release_after_deactivate=bool(self.get_parameter('release_after_deactivate').value),
         ), logger=self.get_logger())
+        self.create_service(Trigger, "get_policy_execution_state", self._execution_state_cb)
         self._set_active_srv = self.create_service(SetBool, self._set_active_service_name, self._set_active_cb)
         self._policy_input_lock_srv = self.create_service(
             SetPolicyInputLock,
@@ -509,6 +618,17 @@ class MarvinPolicyServer(Node):
             "get_policy_observations",
             self._get_policy_observations_cb,
         )
+        self._timing = Timing(
+            str(self.get_parameter('tracing_mode').value),
+            float(self.get_parameter('trace_capture_seconds').value),
+        )
+        self._input_timing = InputTiming(self._timing)
+        self._expected_tick_ns = int(self.get_parameter('publish_period_ms').value * 1e6)
+        if self._timing.mode != 'off':
+            self._timing_publisher = self.create_publisher(String, '/trace/metrics', 10)
+            self._timing_timer = self.create_timer(
+                1.0, self._publish_timing, clock=Clock(clock_type=ClockType.STEADY_TIME)
+            )
         self.action = np.zeros(len(self.joint_names))
         self._nan_action_warned = False
         self._nan_obs_warned = False
@@ -530,6 +650,10 @@ class MarvinPolicyServer(Node):
             self._logger.info("The selected policy does not require a base_lin_vel observation.")
         self._logger.info(
             "Initializing MarvinController (inactive by default). "
+            f"io_backend={'native' if self._native_io else 'python'}, "
+            f"async_inference={self._async_worker is not None}, "
+            f"compact_estimator={self.get_parameter('compact_estimator').value}, "
+            f"lean_qos_events={self.get_parameter('lean_qos_events').value}, "
             f"joy_topic={self._joy_topic}, joint_states_topic={self._joint_states_topic}, "
             f"imu_topic={self._imu_topic}, command_topic={self._command_topic}, "
             f"base_lin_vel_required={self._base_lin_vel_required}, "
@@ -575,6 +699,9 @@ class MarvinPolicyServer(Node):
         source: str = "marvin_policy_server",
         stamp_ns: int | None = None,
     ) -> None:
+        timing = getattr(self, '_timing', None)
+        if timing is not None and not timing.capture_enabled():
+            return
         if not self._publish_trace_events or self._trace_event_publisher is None:
             return
         if trace_id <= 0:
@@ -601,32 +728,82 @@ class MarvinPolicyServer(Node):
         if trace_id is None:
             trace_id = self._next_trace_id()
         trace_id = int(trace_id)
+        timing = getattr(self, '_timing', None)
+        if timing is not None and timing.mode == 'off':
+            timing = None
+        section_started = timing.clock() if timing is not None else 0
         policy_command_values = self._apply_safety_position_limits(command_values)
-        self._latest_policy_joint_command = np.asarray(policy_command_values, dtype=np.float64).copy()
+        if timing is not None:
+            section_started = timing.checkpoint('publish_safety_limits', section_started)
+        self._latest_policy_joint_command = np.array(policy_command_values, dtype=np.float64, copy=True)
         if self._joint_command_output_locked and self._locked_joint_command is not None:
             command_values = self._locked_joint_command.tolist()
         else:
             command_values = policy_command_values
-        self._last_published_joint_command = np.asarray(command_values, dtype=np.float64).copy()
+        if getattr(self, '_execution_gateway', False):
+            prepared = self._execution_preparation.command(command_values)
+            if prepared is not None:
+                command_values = list(prepared)
+                candidate = ExecutorCommand()
+                candidate.stamp = self.get_clock().now().to_msg()
+                candidate.generation = self._execution_preparation.generation
+                candidate.sequence = self._execution_preparation.sequence
+                candidate.trace_id = trace_id
+                candidate.data = command_values
+                self._execution_candidate_publisher.publish(candidate)
+        self._last_published_joint_command = np.array(command_values, dtype=np.float64, copy=True)
+        if timing is not None:
+            timing.count('commands')
+            section_started = timing.checkpoint('publish_array_copies', section_started)
         if self._publish_legacy_commands and self._joint_publisher is not None:
             legacy_msg = Float64MultiArray()
-            legacy_msg.data = command_values
+            legacy_msg.data = array('d', command_values)
+            if timing is not None:
+                section_started = timing.checkpoint('publish_legacy_build', section_started)
             self._joint_publisher.publish(legacy_msg)
+            if timing is not None:
+                section_started = timing.checkpoint('publish_legacy_ros', section_started)
         if self._publish_traced_commands and self._joint_publisher_traced is not None:
             traced_msg = TracedFloat64MultiArray()
             traced_msg.stamp = self.get_clock().now().to_msg()
             traced_msg.trace_id = int(trace_id)
-            traced_msg.data = command_values
+            traced_msg.data = array('d', command_values)
+            if timing is not None:
+                section_started = timing.checkpoint('publish_traced_build', section_started)
             self._joint_publisher_traced.publish(traced_msg)
+            if timing is not None:
+                section_started = timing.checkpoint('publish_traced_ros', section_started)
         if emit_trace_event:
             self._publish_trace_event(int(trace_id), "command_published", stamp_ns=command_published_stamp_ns)
+            if timing is not None:
+                timing.checkpoint('publish_trace_event', section_started)
         return int(trace_id)
+
+    def _prepare_execution(self, request, response):
+        try:
+            if not self._execution_gateway:
+                raise ValueError('Policy is not configured for gateway output')
+            ready, reason = self._base_lin_vel_readiness()
+            if not ready:
+                raise ValueError(reason)
+            self._execution_preparation.prepare(request.generation, request.initial_state_json,
+                                                released=self._execution_state()['output_released'])
+            response.success, response.message = True, 'Policy prepared; output authority not granted'
+        except (ValueError, KeyError, TypeError) as error:
+            response.success, response.message = False, str(error)
+        return response
 
     def _set_active_cb(self, request, response):
         """Handle SetBool to enable/disable policy output.
 
         When activating: start ramp timer. When deactivating: reset actions and publish default stance once.
         """
+        if request.data and getattr(self, '_execution_gateway', False):
+            try:
+                self._execution_preparation.start()
+            except ValueError as error:
+                response.success, response.message = False, str(error)
+                return response
         if request.data:
             ready, readiness_message = self._base_lin_vel_readiness()
             if not ready:
@@ -635,10 +812,15 @@ class MarvinPolicyServer(Node):
                 self._logger.warn(response.message)
                 return response
         now = self.get_clock().now().nanoseconds * 1e-9
+        self._invalidate_async_inference()
         if request.data:
             success, msg = self._activation_mgr.request_activate(now)
             response.success = success
             response.message = msg
+            if success:
+                self._async_fault = None
+            if success and hasattr(self, '_inference_schedule'):
+                self._inference_schedule.reset()
             if success and self._velocity_estimator is not None:
                 self._velocity_estimator.reset()
                 self._latest_estimated_velocity = None
@@ -647,6 +829,8 @@ class MarvinPolicyServer(Node):
                 self._policy_runner.reset()
                 self.action = np.zeros(len(self.joint_names))
                 self._latest_estimated_velocity = None
+            if success and getattr(self, '_sim_release', None) is not None:
+                self._sim_release.reset(self.default_pos)
             if success and self._joint_position_filter is not None:
                 self._joint_position_filter.reset()
         else:
@@ -677,9 +861,45 @@ class MarvinPolicyServer(Node):
         return response
 
     def _set_policy_input_lock(self, input_name: str, locked: bool, values=None) -> tuple[bool, str]:
+        result = self._apply_policy_input_lock(input_name, locked, values)
+        if result[0] and hasattr(self, "_policy_control"):
+            self._policy_control.changed(input_name, locked, values)
+        return result
+
+    def _policy_control_cb(self, request, response):
+        try:
+            if request.action == "state":
+                result = self._policy_control.state()
+            elif request.action == "operation":
+                result = self._policy_control.get(request.session_id, request.command_id)
+            elif request.action == "submit":
+                result = self._policy_control.submit({
+                    "command_id": request.command_id, "session_id": request.session_id,
+                    "expected_revision": request.expected_revision, "control": request.control,
+                    "mode": request.mode, "values": list(request.values),
+                })
+            else:
+                raise PolicyControlError("POLICY_INVALID_REQUEST", "Unsupported policy action")
+            response.result_json = json.dumps(result, separators=(",", ":"), allow_nan=False)
+            response.success = True
+        except PolicyControlError as exc:
+            response.success, response.error_code, response.error_message = False, exc.code, str(exc)
+        except Exception as exc:
+            response.success = False
+            response.error_code = "POLICY_UNAVAILABLE"
+            response.error_message = str(exc)
+        return response
+
+    def _apply_policy_input_lock(self, input_name: str, locked: bool, values=None) -> tuple[bool, str]:
+        result = self._apply_policy_input_lock_impl(input_name, locked, values)
+        if result[0]:
+            self._invalidate_async_inference()
+        return result
+
+    def _apply_policy_input_lock_impl(self, input_name: str, locked: bool, values=None) -> tuple[bool, str]:
         if input_name == "estimator_velocity_odometry":
             if not locked:
-                return self._set_policy_input_lock("estimator_velocity", False, None)
+                return self._apply_policy_input_lock("estimator_velocity", False, None)
             if values is not None:
                 return False, "Odometry estimator-velocity mode does not accept explicit values."
             if not self._estimator_velocity_override_available():
@@ -761,6 +981,11 @@ class MarvinPolicyServer(Node):
                 "estimator_foot_height",
                 "estimator_contact",
             }:
+                age = self._estimator_snapshot_age()
+                if age is None or age > 0.1:
+                    return False, "A fresh estimator result is required to hold this input."
+                if input_name == "estimator_fk" and getattr(self._policy_runner, 'latest_foot_positions', None) is None:
+                    return False, "Foot positions are not available yet."
                 values_array = self._current_estimator_actor_input(
                     input_name
                 )
@@ -851,6 +1076,10 @@ class MarvinPolicyServer(Node):
             return np.zeros(3, dtype=np.float64)
         return self._locked_estimator_velocity.copy()
 
+    def _estimator_snapshot_age(self) -> float | None:
+        stamp = getattr(getattr(self, '_policy_runner', None), 'latest_result_monotonic', None)
+        return None if stamp is None else max(0.0, time.monotonic() - stamp)
+
     def _current_estimator_actor_input(
         self, input_name: str
     ) -> np.ndarray:
@@ -864,7 +1093,7 @@ class MarvinPolicyServer(Node):
             values = (
                 np.asarray(cached, dtype=np.float64).copy()
                 if cached is not None
-                else self._policy_runner.current_foot_positions()
+                else None
             )
             return (
                 values
@@ -947,6 +1176,16 @@ class MarvinPolicyServer(Node):
                 positions[index] = joint_state.position[source_index] - self.default_pos[index]
         return positions
 
+    def _execution_state(self):
+        state = self._activation_mgr.state
+        return {'active': state.active,
+                'output_released': not state.active and state.deactivation_start_time is None}
+
+    def _execution_state_cb(self, request, response):
+        response.success = True
+        response.message = json.dumps(self._execution_state())
+        return response
+
     def _observation_status_payload(self) -> dict[str, object]:
         base_lin_vel_ready, base_lin_vel_message = self._base_lin_vel_readiness()
         command_live = self._current_lock_group_values("command")
@@ -1003,6 +1242,8 @@ class MarvinPolicyServer(Node):
             else np.zeros(3, dtype=np.float64)
         )
         command_effective = self._locked_command_input if self._command_input_locked else command_live
+        if not self._operator_permission.allowed():
+            command_effective = np.zeros(3)
         imu_effective = (
             np.concatenate(tuple(self._locked_imu_input.values()))
             if self._imu_input_locked and self._locked_imu_input is not None
@@ -1056,6 +1297,7 @@ class MarvinPolicyServer(Node):
         return {
             "policy_path": str(self.policy_path),
             "env_path": str(self._env_path),
+            "loaded_artifacts": getattr(self, '_loaded_artifacts', None),
             "base_lin_vel_source": {
                 "required": self._base_lin_vel_required,
                 "configured": self._base_lin_vel_source,
@@ -1067,6 +1309,8 @@ class MarvinPolicyServer(Node):
                 "timeout_sec": self._base_lin_vel_timeout_sec,
             },
             "concurrent_policy": {
+                "snapshot_age_seconds": self._estimator_snapshot_age(),
+                "snapshot_available": self._estimator_snapshot_age() is not None,
                 "enabled": getattr(self, "_concurrent_policy_enabled", False),
                 "manifest": (
                     str(self._concurrent_policy_manifest.path)
@@ -1103,6 +1347,9 @@ class MarvinPolicyServer(Node):
                     "_velocity_estimator_add_gravity_to_imu_acceleration",
                     False,
                 ),
+                "imu_acceleration_scale": getattr(
+                    self, "_velocity_estimator_imu_acceleration_scale", 1.0
+                ),
                 "summary": (
                     self._velocity_estimator_shadow_recorder.summary()
                     if getattr(self, "_velocity_estimator_shadow_recorder", None) is not None
@@ -1138,7 +1385,7 @@ class MarvinPolicyServer(Node):
                 },
                 "estimator_fk": {
                     "locked": self._locked_estimator_fk is not None,
-                    "available": estimator_outputs_available,
+                    "available": estimator_outputs_available and getattr(self._policy_runner, 'latest_foot_positions', None) is not None,
                     "labels": [
                         f"{foot} {axis}"
                         for foot in ("FL", "RL", "FR", "RR")
@@ -1196,13 +1443,27 @@ class MarvinPolicyServer(Node):
         """Store the latest velocity command."""
         self._cmd_vel = msg
 
+    def _dynamic_joint_state_cb(self, msg):
+        try:
+            state, receipts = decode_snapshot(msg, self.joint_names, JointState)
+        except ValueError:
+            self._latest_joint_state = None
+            self._timing.count('encoder_snapshot_invalid')
+            return
+        self._input_timing.received_encoders(state, receipts)
+        self._joint_state_cb(state)
+
     def _joint_state_cb(self, msg: JointState):
         # Store latest joint state
         self._latest_joint_state = msg
+        if hasattr(self, '_input_timing'):
+            self._input_timing.received('joint')
 
     def _imu_cb(self, msg: Imu):
         # Store latest imu
         self._latest_imu = msg
+        if hasattr(self, '_input_timing'):
+            self._input_timing.received('imu')
 
     def _odometry_cb(self, msg: Odometry):
         expected_frame = self._odometry_child_frame_id.lstrip("/")
@@ -1264,6 +1525,7 @@ class MarvinPolicyServer(Node):
                 self._velocity_estimator_add_gravity_to_imu_acceleration
             ),
             gravity_magnitude=self._velocity_estimator_gravity_magnitude,
+            acceleration_scale=self._velocity_estimator_imu_acceleration_scale,
         )
         if self._velocity_estimator_shadow_enabled:
             self._velocity_estimator_shadow_recorder = VelocityEstimatorShadowRecorder(
@@ -1336,6 +1598,8 @@ class MarvinPolicyServer(Node):
                     dtype=np.float64,
                 )
             )
+            if not self._operator_permission.allowed():
+                command = np.zeros(3)
             if self._velocity_estimator_diagnostic_recorder is not None:
                 self._pending_velocity_estimator_diagnostic = {
                     "ros_time_sec": ros_time_sec,
@@ -1440,6 +1704,11 @@ class MarvinPolicyServer(Node):
         return None
 
     def _base_lin_vel_readiness(self, monotonic_now: float | None = None) -> tuple[bool, str]:
+        gate = getattr(self, '_sim_release', None)
+        if gate is not None:
+            ready, reason = gate.readiness(self.get_clock().now().nanoseconds)
+            if not ready:
+                return ready, reason
         if not self._base_lin_vel_required:
             return True, "The selected policy does not require base_lin_vel."
         if getattr(self, "_concurrent_policy_enabled", False):
@@ -1490,16 +1759,132 @@ class MarvinPolicyServer(Node):
             return False, f"odometry on {self._odometry_topic} contains non-finite linear velocity"
         return True, f"base_lin_vel is supplied by fresh body-frame odometry on {self._odometry_topic}."
 
+    def _publish_timing(self):
+        self._timing_publisher.publish(String(data=json.dumps(self._timing.snapshot())))
+
+    def _sim_identity(self, msg):
+        try:
+            changed = self._sim_release.identity(msg.data)
+        except (ValueError, KeyError, TypeError) as error:
+            self._sim_release.error = str(error)
+            changed = True
+        if changed or self._sim_release.error:
+            self._invalidate_async_inference()
+            self._inference_schedule.reset()
+            # A new scene cannot inherit action history or command ownership.
+            self._sim_release.reset(self.default_pos)
+            self.action = self._sim_release.last_raw.copy()
+            self._activation_mgr.state = ActivationState(released=True)
+            self._policy_runner.reset()
+            self._obs_state.action_history.fill(0.)
+            self._execution_preparation = PolicyPreparation(self.joint_names)
+
+    def _release_sim_action(self, now_ns):
+        gate = self._sim_release
+        result = gate.take(now_ns)
+        if result is not None:
+            self.action, target, trace_id = result
+            self._publish_joint_command(target.tolist(), trace_id=trace_id,
+                emit_trace_event=True, command_published_stamp_ns=now_ns)
+            self._advance_action_history()
+            gate.last_release['joint_names'] = self.joint_names
+            gate.last_release['target'] = self._last_published_joint_command.tolist()
+            self._sim_release_publisher.publish(String(data=json.dumps(gate.last_release)))
+            warning = gate.cadence_warning(now_ns)
+            if warning:
+                self._logger.warn(warning)
+        return result is not None
+
+    def _invalidate_async_inference(self):
+        gate = getattr(self, '_sim_release', None)
+        if gate is not None:
+            gate.clear()
+            self.action = gate.last_raw.copy()
+        worker = getattr(self, '_async_worker', None)
+        if worker is not None:
+            worker.invalidate()
+            self._async_pending_ns = None
+            self._async_has_action = False
+
+    def _poll_async_inference(self, now_ns):
+        """Accept only current-generation, timely results on the ROS thread."""
+        worker = self._async_worker
+        try:
+            result = worker.poll()
+        except (RuntimeError, EOFError, BrokenPipeError, OSError) as exc:
+            self._fault_async_inference(str(exc))
+            return None
+        if result is None:
+            if (self._async_pending_ns is not None and
+                    time.monotonic_ns() - self._async_pending_ns > self._inference_max_age_ns):
+                self._fault_async_inference('Inference deadline exceeded')
+            return None
+        self._async_pending_ns = None
+        observation_ns, trace_id = result.context
+        self._result_observation_ns = observation_ns
+        if (result.error is not None or
+                result.finished_ns - result.submitted_ns > self._inference_max_age_ns or
+                not 0 <= now_ns - observation_ns <= self._inference_max_age_ns):
+            self._fault_async_inference(str(result.error) if result.error else 'Inference result expired')
+            return None
+        action, state = result.value
+        candidate = np.asarray(action)
+        if candidate.shape != self.action.shape or not np.isfinite(candidate).all():
+            self._fault_async_inference('Inference returned invalid action')
+            return None
+        self.action = np.clip(candidate, -10., 10.)
+        for name, value in state.items():
+            setattr(self._policy_runner, name, value)
+        self._policy_runner.current_action = self.action.copy()
+        self._async_has_action = True
+        estimated = state.get('latest_estimated_state')
+        if estimated is not None:
+            self._latest_estimated_velocity = estimated[:3].copy()
+        self._publish_trace_event(trace_id, 'infer_end', stamp_ns=now_ns)
+        timing = getattr(self, '_timing', None)
+        if timing is not None:
+            timing.count('inferences')
+            timing.duration('inference', result.finished_ns - result.submitted_ns)
+            timing.duration('inference_result_wait', time.monotonic_ns() - result.finished_ns)
+        return trace_id
+
+    def _fault_async_inference(self, message):
+        self._invalidate_async_inference()
+        self._async_fault = message
+        self._logger.error(f'{message}; policy command publication stopped. Explicit reactivation is required.')
+
+    def _advance_action_history(self):
+        if self._obs_state.action_history.shape[0] > 0:
+            frame = action_history_feedback(
+                self._actor_action_history_mode, self.action,
+                self._latest_policy_joint_command, self.default_pos, self._action_scale)
+            self._obs_state.action_history[:-1] = self._obs_state.action_history[1:]
+            self._obs_state.action_history[-1] = frame
+
     def _timer_tick(self):
-        
+        timing = getattr(self, '_timing', None)
+        if timing is None or timing.mode == 'off':
+            return self._timer_tick_impl()
+        started = timing.tick(self._expected_tick_ns)
+        try:
+            return self._timer_tick_impl()
+        finally:
+            timing.finish_callback(started, self._expected_tick_ns)
+
+    def _timer_tick_impl(self):
+        timing = getattr(self, '_timing', None)
+        if timing is not None and timing.mode == 'off':
+            timing = None
         # Need both messages before proceeding
         if self._latest_joint_state is None or self._latest_imu is None:
+            self._inference_schedule.reset()
+            self._invalidate_async_inference()
+            if timing is not None:
+                timing.count('ticks_missing_inputs')
             return
 
-        now_time = self.get_clock().now().nanoseconds * 1e-9
-        # Compute dt
-        self._dt = max(1e-4, now_time - self._last_tick_time)
-        self._last_tick_time = now_time
+        observation_ns = self.get_clock().now().nanoseconds
+        now_time = observation_ns * 1e-9
 
         joint_state = self._latest_joint_state
         imu = self._latest_imu
@@ -1508,6 +1893,10 @@ class MarvinPolicyServer(Node):
         js_age = now_time - (joint_state.header.stamp.sec + joint_state.header.stamp.nanosec * 1e-9 if joint_state.header.stamp else now_time)
         imu_age = now_time - (imu.header.stamp.sec + imu.header.stamp.nanosec * 1e-9 if imu.header.stamp else now_time)
         if js_age > 0.5 or imu_age > 0.5:
+            self._inference_schedule.reset()
+            self._invalidate_async_inference()
+            if timing is not None:
+                timing.count('ticks_stale_inputs')
             if self._stale_warn_count < 10:
                 self._stale_warn_count += 1
                 self._logger.warn(f"Stale sensor data detected (joint_state age: {js_age:.3f}s, imu age: {imu_age:.3f}s); skipping control tick")
@@ -1517,6 +1906,12 @@ class MarvinPolicyServer(Node):
 
         # If not active, keep publishing default stance (so downstream controllers hold posture)
         if not self._activation_mgr.is_active():
+            self._inference_schedule.reset()
+            self._invalidate_async_inference()
+            if hasattr(self, '_input_timing'):
+                self._input_timing.reset_interval()
+            if timing is not None:
+                timing.count('ticks_inactive')
             blended = self._activation_mgr.compute_deactivation_blend(now_time)
             if blended is not None:
                 # Use ramp-down blending (blended already scaled raw action; apply scale here)
@@ -1525,12 +1920,70 @@ class MarvinPolicyServer(Node):
                 return
             return
 
-        should_infer = self._policy_runner.should_infer()
+        gate = getattr(self, '_sim_release', None)
+        if gate is not None:
+            if gate.last_clock is not None and observation_ns < gate.last_clock:
+                gate.error = 'Waiting for a new scene identity after simulation clock reset'
+            if gate.observe(observation_ns, self._operator_permission.allowed()):
+                self._invalidate_async_inference()
+                self._inference_schedule.reset()
+            if not self._base_lin_vel_readiness()[0]:
+                self._invalidate_async_inference()
+                self._inference_schedule.reset()
+                return
+            self._release_sim_action(observation_ns)
+            if gate.pending is not None:
+                self._publish_joint_command(gate.last_target.tolist())
+                return
+        worker = getattr(self, '_async_worker', None)
+        completed_trace_id = None
+        if worker is not None:
+            permission = self._operator_permission.allowed()
+            if ((self._async_last_clock_ns is not None and observation_ns < self._async_last_clock_ns)
+                    or permission != self._async_permission):
+                self._invalidate_async_inference()
+                self._inference_schedule.reset()
+            self._async_last_clock_ns = observation_ns
+            self._async_permission = permission
+            if self._async_fault is not None:
+                return
+            if not self._base_lin_vel_readiness()[0]:
+                self._invalidate_async_inference()
+                self._inference_schedule.reset()
+                return
+            completed_trace_id = self._poll_async_inference(observation_ns)
+            if self._async_fault is not None:
+                return
+            if completed_trace_id is not None:
+                # Publish/commit this result before building another observation.
+                # This avoids an extra timer-period delay without stale action history.
+                ramp = self._activation_mgr.compute_activation_factor(now_time)
+                position = self._map_action_to_joint_positions(self.action * ramp)
+                if gate is not None:
+                    gate.submit(self.action, position, self._result_observation_ns, observation_ns, completed_trace_id)
+                    self.action = gate.last_raw.copy()
+                    if not self._release_sim_action(observation_ns):
+                        self._publish_joint_command(gate.last_target.tolist())
+                    return
+                self._publish_joint_command(position.tolist(), trace_id=completed_trace_id,
+                                            emit_trace_event=True, command_published_stamp_ns=observation_ns)
+                self._advance_action_history()
+        should_infer = self._inference_schedule.due(observation_ns) and (worker is None or worker.ready)
+        applied_inference = completed_trace_id is not None
+        if timing is not None:
+            timing.count('inference_ticks' if should_infer else 'held_action_ticks')
+            timing.stage('input_checks')
         if should_infer:
             self._update_velocity_estimator(joint_state, imu, now_time)
+        if timing is not None:
+            timing.stage('velocity_estimator')
 
         base_lin_vel_ready, base_lin_vel_message = self._base_lin_vel_readiness()
         if not base_lin_vel_ready:
+            self._inference_schedule.reset()
+            self._invalidate_async_inference()
+            if timing is not None:
+                timing.count('ticks_velocity_unready')
             if not self._base_lin_vel_warned:
                 self._logger.warn(f"Skipping active policy ticks: {base_lin_vel_message}")
                 self._base_lin_vel_warned = True
@@ -1539,20 +1992,27 @@ class MarvinPolicyServer(Node):
 
         # Build observation via modular builder
         trace_id = self._next_trace_id()
-        base_ros_ns = int(self.get_clock().now().nanoseconds)
-        base_perf_ns = time.perf_counter_ns()
+        capture = timing is not None and timing.capture_enabled()
+        base_ros_ns = int(self.get_clock().now().nanoseconds) if capture else 0
+        base_perf_ns = time.perf_counter_ns() if capture else 0
         last_stage_ns = base_ros_ns
 
         def _next_stage_stamp_ns() -> int:
             nonlocal last_stage_ns
+            if not capture:
+                return 0
             candidate = base_ros_ns + max(0, int(time.perf_counter_ns() - base_perf_ns))
             if candidate <= last_stage_ns:
                 candidate = last_stage_ns + 1
             last_stage_ns = candidate
             return candidate
 
+        if timing is not None:
+            timing.stage('readiness_and_trace_setup')
         if should_infer:
             command_override = self._locked_command_input if self._command_input_locked else None
+            if not self._operator_permission.allowed():
+                command_override = np.zeros(3)
             imu_override = self._locked_imu_input if self._imu_input_locked else None
             base_lin_vel_override = self._base_lin_vel_override()
             filtered_joint_position = None
@@ -1571,7 +2031,7 @@ class MarvinPolicyServer(Node):
                 joint_state,
                 imu,
                 self._cmd_vel,
-                self._dt,
+                self._inference_schedule.observation_dt(observation_ns),
                 self._obs_state,
                 command_override=command_override,
                 imu_override=imu_override,
@@ -1579,7 +2039,10 @@ class MarvinPolicyServer(Node):
                 joint_position_relative_override=joint_position_override,
                 joint_velocity_override=joint_velocity_override,
             )
+            if timing is not None:
+                timing.stage('observation_build')
             if not np.isfinite(obs).all():
+                self._invalidate_async_inference()
                 if not self._nan_obs_warned:
                     self._logger.warn(
                         "Non-finite values detected in policy observation; publishing default stance until inputs recover."
@@ -1594,38 +2057,65 @@ class MarvinPolicyServer(Node):
                 return
             self._nan_obs_warned = False
             self._publish_trace_event(trace_id, "obs_ready", stamp_ns=_next_stage_stamp_ns())
-            # self._logger.info(f"obs : {obs}")
-            ang_vel_b_str = np.array2string(obs[3:6], precision=4, suppress_small=True)
-            # self.get_logger().info(f"ang_vel_b: {ang_vel_b_str}")
 
             self._publish_trace_event(trace_id, "infer_start", stamp_ns=_next_stage_stamp_ns())
-            if self._concurrent_policy_feature_builder is None:
-                self.action = self._policy_runner.step(obs)
+            if timing is not None:
+                timing.stage('observation_validation_and_trace')
+                input_timing = getattr(self, '_input_timing', None)
+                if input_timing is not None:
+                    overridden = []
+                    if self._imu_input_locked:
+                        overridden.append('imu')
+                    if self._joint_position_input_locked or self._velocity_input_locked:
+                        overridden.append('joint')
+                    input_timing.inference(
+                        self.get_clock().now().nanoseconds,
+                        {'joint': joint_state, 'imu': imu}, overridden=overridden,
+                    )
+                    if (getattr(self, '_dynamic_joint_states_topic', '')
+                            and 'joint' not in overridden):
+                        input_timing.encoder_inference(joint_state)
+            inference_started = time.monotonic_ns()
+            overrides = {}
+            if self._concurrent_policy_feature_builder is not None:
+                overrides = {
+                    'estimated_velocity_override': self._effective_estimator_velocity_override(),
+                    'estimated_foot_positions_override': self._locked_estimator_fk,
+                    'estimated_foot_height_override': self._locked_estimator_foot_height,
+                    'estimated_contact_override': self._locked_estimator_contact,
+                }
+            args, kwargs = runner_inputs(
+                obs, feature_builder=self._concurrent_policy_feature_builder,
+                joint_state=joint_state, imu=imu,
+                previous_action=(self.action if self._concurrent_policy_feature_builder is not None else None),
+                filtered_joint_position=filtered_joint_position, **overrides)
+            if worker is not None:
+                self._async_pending_ns = time.monotonic_ns()
+                try:
+                    submitted = worker.submit(deepcopy((args, kwargs)), (observation_ns, trace_id))
+                except (RuntimeError, EOFError, BrokenPipeError, OSError) as exc:
+                    self._fault_async_inference(str(exc))
+                    return
+                if not submitted:
+                    self._async_pending_ns = None
+                else:
+                    # Reserve the next ROS-clock slot at submission, not at polling.
+                    # No backlog is possible while the worker is busy.
+                    self._inference_schedule.complete(observation_ns, observation_ns)
+                trace_id = self._next_trace_id()  # Held output is not the pending inference result.
             else:
-                estimator_features = self._concurrent_policy_feature_builder.build(
-                    joint_state,
-                    imu,
-                    self.action,
-                    joint_position_relative_override=filtered_joint_position,
-                )
-                self.action = self._policy_runner.step(
-                    obs,
-                    estimator_features,
-                    estimated_velocity_override=self._effective_estimator_velocity_override(),
-                    estimated_foot_positions_override=(
-                        self._locked_estimator_fk
-                    ),
-                    estimated_foot_height_override=(
-                        self._locked_estimator_foot_height
-                    ),
-                    estimated_contact_override=(
-                        self._locked_estimator_contact
-                    ),
-                )
-                estimated_state = self._policy_runner.latest_estimated_state
-                if estimated_state is not None:
-                    self._latest_estimated_velocity = estimated_state[:3].copy()
-            self._publish_trace_event(trace_id, "infer_end", stamp_ns=_next_stage_stamp_ns())
+                self.action = self._policy_runner.step(*args, **kwargs)
+                if self._concurrent_policy_feature_builder is not None:
+                    estimated_state = self._policy_runner.latest_estimated_state
+                    if estimated_state is not None:
+                        self._latest_estimated_velocity = estimated_state[:3].copy()
+            if worker is None:
+                applied_inference = True
+                self._publish_trace_event(trace_id, "infer_end", stamp_ns=_next_stage_stamp_ns())
+            if timing is not None and worker is None:
+                timing.count('inferences')
+                timing.duration('inference', time.monotonic_ns() - inference_started)
+                timing.stage('inference_stage')
             self.action = np.clip(self.action, -10.0, 10.0)
             if not np.isfinite(self.action).all():
                 if not self._nan_action_warned:
@@ -1638,8 +2128,27 @@ class MarvinPolicyServer(Node):
                 self._nan_action_warned = False
             self._record_velocity_estimator_diagnostic(self.action)
             # self._logger.info(f"Policy action: {self.action}")
-        else:
-            self.action = self._policy_runner.step(None)
+        elif worker is None and gate is None:
+            self.action = self._policy_runner.step(None, infer=False)
+        if timing is not None:
+            timing.stage('action_postprocess')
+
+        if worker is not None and applied_inference:
+            return  # Already published and committed before the next submission.
+        if worker is not None and not self._async_has_action:
+            return  # Never publish an action from before activation/invalidation.
+
+        if gate is not None:
+            if applied_inference:
+                ramp = self._activation_mgr.compute_activation_factor(now_time)
+                target = self._map_action_to_joint_positions(self.action * ramp)
+                completed_ns = self.get_clock().now().nanoseconds
+                gate.submit(self.action, target, observation_ns, completed_ns, trace_id)
+                self.action = gate.last_raw.copy()
+                self._inference_schedule.complete(observation_ns, completed_ns)
+            if not self._release_sim_action(self.get_clock().now().nanoseconds):
+                self._publish_joint_command(gate.last_target.tolist())
+            return
 
         # Compute ramp factor if within activation ramp window
         ramp_factor = self._activation_mgr.compute_activation_factor(now_time)
@@ -1676,33 +2185,33 @@ class MarvinPolicyServer(Node):
         # self._joint_command.effort = np.zeros(len(self.joint_names)).tolist()
         # self._joint_publisher.publish(self._joint_command)
  
+        if timing is not None:
+            timing.stage('action_mapping')
         self._publish_joint_command(
             action_pos.tolist(),
             trace_id=trace_id,
             emit_trace_event=True,
             command_published_stamp_ns=_next_stage_stamp_ns(),
         )
-        if should_infer and self._obs_state.action_history.shape[0] > 0:
-            history_frame = action_history_feedback(
-                self._actor_action_history_mode,
-                self.action,
-                self._latest_policy_joint_command,
-                self.default_pos,
-                self._action_scale,
-            )
-            self._obs_state.action_history[:-1] = (
-                self._obs_state.action_history[1:]
-            )
-            self._obs_state.action_history[-1] = history_frame
+        if timing is not None:
+            timing.stage('command_publish')
+        if applied_inference:
+            self._advance_action_history()
+        if timing is not None:
+            timing.stage('action_history')
+        if should_infer and worker is None:
+            self._inference_schedule.complete(observation_ns, self.get_clock().now().nanoseconds)
     # Legacy methods (_compute_observation, _compute_action, forward, quat_to_rot_matrix)
     # are now handled by modular components but retained above as commented history.
     def load_policy(self):
         """Load the neural network policy from the specified path."""
         # Load policy from file to io.BytesIO object
         with open(self.policy_path, 'rb') as f:
-            buffer = io.BytesIO(f.read())
+            content = f.read()
+            buffer = io.BytesIO(content)
         # Load TorchScript model from buffer
         self.policy = torch.jit.load(buffer)
+        self._loaded_artifacts['policy.pt'] = artifact_identity(self.policy_path, content)
 
     def _load_safety_position_limits(self) -> None:
         """Load optional per-joint position clamps from a YAML safety envelope."""
@@ -1769,19 +2278,21 @@ class MarvinPolicyServer(Node):
             )
             return command_values
 
-        clipped = np.clip(command, self._safety_min_pos, self._safety_max_pos)
-        clipped_mask = np.abs(clipped - command) > 1e-9
-        if np.any(clipped_mask):
+        cache = getattr(self, '_command_clip_cache', None)
+        if cache is None:
+            cache = self._command_clip_cache = CommandClipCache()
+        clipped, clipped_indices = cache.apply(
+            command, self._safety_min_pos, self._safety_max_pos)
+        if clipped_indices:
             now = self.get_clock().now().nanoseconds * 1e-9
             if now - self._last_safety_clip_warn_time >= 1.0:
                 self._last_safety_clip_warn_time = now
                 clipped_joints = [
-                    f"{name}:{command[i]:.3f}->{clipped[i]:.3f}"
-                    for i, name in enumerate(self.joint_names)
-                    if clipped_mask[i]
+                    f"{self.joint_names[i]}:{command[i]:.3f}->{clipped[i]:.3f}"
+                    for i in clipped_indices
                 ]
                 self._logger.warn("Safety position limits clipped policy command: " + ", ".join(clipped_joints))
-        return clipped.tolist()
+        return clipped
 
     @staticmethod
     def _infer_policy_input_dim(policy: torch.jit.ScriptModule) -> int | None:
@@ -1845,10 +2356,19 @@ def main(args=None):
     except KeyboardInterrupt:
         if node is not None:
             node.get_logger().info("KeyboardInterrupt received, shutting down policy server.")
+    except ExternalShutdownException:
+        # Launch has already shut down the shared ROS context.
+        pass
     finally:
         if node is not None:
+            worker = getattr(node, '_async_worker', None)
+            if worker is not None:
+                worker.close()
             node._close_velocity_estimator_shadow()
-            node.destroy_node()
+            try:
+                node.destroy_node()
+            except (KeyboardInterrupt, ExternalShutdownException):
+                pass
         if rclpy.ok():
             rclpy.shutdown()
 

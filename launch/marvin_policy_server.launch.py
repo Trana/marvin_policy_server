@@ -13,12 +13,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
+from launch import LaunchDescription, Substitution
+from launch.actions import DeclareLaunchArgument, EmitEvent, RegisterEventHandler
+from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch_ros.actions import Node
-from launch.substitutions import LaunchConfiguration
-from ament_index_python.packages import get_package_share_directory
+from launch_ros.parameter_descriptions import ParameterValue
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
+from ament_index_python.packages import get_package_share_directory, get_package_prefix
 import os
+
+
+class PolicyExecutable(Substitution):
+    def perform(self, context):
+        backend = LaunchConfiguration('io_backend').perform(context)
+        if backend not in {'python', 'native'}:
+            raise ValueError('io_backend must be python or native')
+        return 'marvin_policy_server_native' if backend == 'native' else 'marvin_policy_server'
+
+
+class PolicyAsyncSetting(Substitution):
+    def perform(self, context):
+        # Native I/O already isolates the high-rate publisher from Python compute.
+        if LaunchConfiguration('io_backend').perform(context) == 'native':
+            return 'false'
+        return LaunchConfiguration('async_inference').perform(context)
 
 
 def generate_launch_description():
@@ -38,7 +58,117 @@ def generate_launch_description():
         get_package_share_directory('description'),
         'models/limits/marvin_joint_limits.yaml'
     )
+
+    policy_server = Node(
+        package='marvin_policy_server',
+        executable=PolicyExecutable(),
+        name='marvin_policy_server',
+        namespace=LaunchConfiguration('namespace'),
+        prefix=LaunchConfiguration('policy_python_executable'),
+        output="screen",
+        parameters=[{
+            'async_inference': ParameterValue(PolicyAsyncSetting(), value_type=bool),
+            'native_io_executable': ParameterValue(LaunchConfiguration('native_io_executable'), value_type=str),
+            'compact_estimator': ParameterValue(LaunchConfiguration('compact_estimator'), value_type=bool),
+            'lean_qos_events': ParameterValue(LaunchConfiguration('lean_qos_events'), value_type=bool),
+            'inference_max_age_ms': ParameterValue(LaunchConfiguration('inference_max_age_ms'), value_type=float),
+            'publish_period_ms': LaunchConfiguration('publish_period_ms'),
+            'policy_path': LaunchConfiguration('policy_path'),
+            'env_path': LaunchConfiguration('env_path'),
+            "use_sim_time": LaunchConfiguration('use_sim_time'),
+            "joy_topic": LaunchConfiguration('joy_topic'),
+            'operator_input_required': ParameterValue(LaunchConfiguration('operator_input_required'), value_type=bool),
+            "joint_states_topic": LaunchConfiguration('joint_states_topic'),
+            'same_host_dynamic_joint_states_topic': ParameterValue(
+                LaunchConfiguration('same_host_dynamic_joint_states_topic'), value_type=str),
+            "imu_topic": LaunchConfiguration('imu_topic'),
+            "base_lin_vel_source": LaunchConfiguration('base_lin_vel_source'),
+            "odometry_topic": LaunchConfiguration('odometry_topic'),
+            "odometry_child_frame_id": LaunchConfiguration('odometry_child_frame_id'),
+            "base_lin_vel_timeout_sec": LaunchConfiguration('base_lin_vel_timeout_sec'),
+            "velocity_estimator_shadow_enabled": LaunchConfiguration('velocity_estimator_shadow_enabled'),
+            "velocity_estimator_checkpoint": LaunchConfiguration('velocity_estimator_checkpoint'),
+            "velocity_estimator_shadow_topic": LaunchConfiguration('velocity_estimator_shadow_topic'),
+            "velocity_estimator_shadow_log_dir": LaunchConfiguration('velocity_estimator_shadow_log_dir'),
+            "velocity_estimator_shadow_summary_interval_samples": LaunchConfiguration(
+                'velocity_estimator_shadow_summary_interval_samples'
+            ),
+            "velocity_estimator_diagnostic_log_dir": LaunchConfiguration(
+                'velocity_estimator_diagnostic_log_dir'
+            ),
+            "velocity_estimator_add_gravity_to_imu_acceleration": LaunchConfiguration(
+                'velocity_estimator_add_gravity_to_imu_acceleration'
+            ),
+            "velocity_estimator_gravity_magnitude": LaunchConfiguration(
+                'velocity_estimator_gravity_magnitude'
+            ),
+            "velocity_estimator_imu_acceleration_scale": LaunchConfiguration(
+                'velocity_estimator_imu_acceleration_scale'
+            ),
+            "execution_gateway": ParameterValue(LaunchConfiguration('execution_gateway'), value_type=bool),
+            "command_topic": LaunchConfiguration('command_topic'),
+            "traced_command_topic": LaunchConfiguration('traced_command_topic'),
+            "publish_legacy_commands": LaunchConfiguration('publish_legacy_commands'),
+            "publish_traced_commands": LaunchConfiguration('publish_traced_commands'),
+            "trace_event_topic": LaunchConfiguration('trace_event_topic'),
+            "publish_trace_events": LaunchConfiguration('publish_trace_events'),
+            "tracing_mode": ParameterValue(LaunchConfiguration('tracing_mode'), value_type=str),
+            "trace_capture_seconds": ParameterValue(LaunchConfiguration('trace_capture_seconds'), value_type=float),
+            "trace_source_id": LaunchConfiguration('trace_source_id'),
+            "trace_instance_id": LaunchConfiguration('trace_instance_id'),
+            "set_active_service_name": LaunchConfiguration('set_active_service_name'),
+            "set_policy_input_lock_service_name": LaunchConfiguration('set_policy_input_lock_service_name'),
+            "safety_limits_enabled": LaunchConfiguration('safety_limits_enabled'),
+            "safety_limits_path": LaunchConfiguration('safety_limits_path'),
+            "action_output_mapping": LaunchConfiguration('action_output_mapping'),
+            "actor_action_history_mode": LaunchConfiguration(
+                'actor_action_history_mode'
+            ),
+            "joint_position_filter_tau_sec": LaunchConfiguration(
+                'joint_position_filter_tau_sec'
+            ),
+        }]
+    )
+
+    shutdown_on_policy_exit = RegisterEventHandler(
+        OnProcessExit(
+            target_action=policy_server,
+            on_exit=[EmitEvent(event=Shutdown(reason='Policy server exited'))],
+        ),
+        condition=IfCondition(LaunchConfiguration('shutdown_on_exit')),
+    )
+
     return LaunchDescription([
+        DeclareLaunchArgument('execution_gateway', default_value='false'),
+        DeclareLaunchArgument('io_backend', choices=['python', 'native'], default_value=EnvironmentVariable(
+            'MARVIN_POLICY_IO_BACKEND', default_value='python')),
+        DeclareLaunchArgument('native_io_executable', default_value=EnvironmentVariable(
+            'MARVIN_POLICY_NATIVE_IO_EXECUTABLE', default_value=os.path.join(
+                get_package_prefix('marvin_policy_server'), 'lib', 'marvin_policy_server', 'marvin_policy_io'))),
+        DeclareLaunchArgument('async_inference', default_value=EnvironmentVariable(
+            'MARVIN_POLICY_ASYNC_INFERENCE', default_value='false')),
+        DeclareLaunchArgument('compact_estimator', default_value=EnvironmentVariable(
+            'MARVIN_POLICY_COMPACT_ESTIMATOR', default_value='false')),
+        DeclareLaunchArgument('lean_qos_events', default_value=EnvironmentVariable(
+            'MARVIN_POLICY_LEAN_QOS_EVENTS', default_value='false')),
+        DeclareLaunchArgument('inference_max_age_ms', default_value=EnvironmentVariable(
+            'MARVIN_POLICY_INFERENCE_MAX_AGE_MS', default_value='100.0')),
+        DeclareLaunchArgument('operator_input_required', default_value='false'),
+        DeclareLaunchArgument('tracing_mode', default_value=EnvironmentVariable(
+            'MARVIN_TRACING_MODE', default_value='metrics'), choices=['off', 'metrics', 'capture']),
+        DeclareLaunchArgument('trace_capture_seconds', default_value=EnvironmentVariable(
+            'MARVIN_TRACE_CAPTURE_SECONDS', default_value='30')),
+        DeclareLaunchArgument(
+            "policy_python_executable",
+            default_value=EnvironmentVariable(
+                "MARVIN_POLICY_PYTHON",
+                default_value="/home/trana/venv_ros/bin/python",
+            ),
+            description="Python interpreter used to start the policy server"),
+        DeclareLaunchArgument(
+            "shutdown_on_exit",
+            default_value="False",
+            description="Shut down the containing launch when the policy server exits"),
         DeclareLaunchArgument(
             "publish_period_ms",
             default_value="5",
@@ -71,6 +201,10 @@ def generate_launch_description():
             "imu_topic",
             default_value="/imu",
             description="IMU topic used by policy server"),
+        DeclareLaunchArgument(
+            'same_host_dynamic_joint_states_topic',
+            default_value='',
+            description='Diagnostic input only: broadcaster and policy must share Linux host/boot'),
         DeclareLaunchArgument(
             "base_lin_vel_source",
             default_value="imu_integration",
@@ -120,6 +254,10 @@ def generate_launch_description():
             default_value="9.81",
             description="Gravity magnitude used by the optional acceleration conversion"),
         DeclareLaunchArgument(
+            "velocity_estimator_imu_acceleration_scale",
+            default_value="1.0",
+            description="Input acceleration to SI scale, applied before gravity reconstruction"),
+        DeclareLaunchArgument(
             "command_topic",
             default_value="marvin_joint_controller/commands",
             description="Output joint command topic"),
@@ -129,7 +267,7 @@ def generate_launch_description():
             description="Output traced joint command topic"),
         DeclareLaunchArgument(
             "publish_legacy_commands",
-            default_value="True",
+            default_value="False",
             description="Publish std_msgs/Float64MultiArray command topic"),
         DeclareLaunchArgument(
             "publish_traced_commands",
@@ -182,61 +320,6 @@ def generate_launch_description():
                 "Optional first-order filter time constant for joint-position "
                 "inputs; zero disables filtering"
             )),
-        Node(
-            package='marvin_policy_server',
-            executable='marvin_policy_server',
-            name='marvin_policy_server',
-            namespace=LaunchConfiguration('namespace'),
-            prefix='/home/trana/venv_ros/bin/python',
-            output="screen",
-            parameters=[{
-                'publish_period_ms': LaunchConfiguration('publish_period_ms'),
-                'policy_path': LaunchConfiguration('policy_path'),
-                'env_path': LaunchConfiguration('env_path'),
-                "use_sim_time": LaunchConfiguration('use_sim_time'),
-                "joy_topic": LaunchConfiguration('joy_topic'),
-                "joint_states_topic": LaunchConfiguration('joint_states_topic'),
-                "imu_topic": LaunchConfiguration('imu_topic'),
-                "base_lin_vel_source": LaunchConfiguration('base_lin_vel_source'),
-                "odometry_topic": LaunchConfiguration('odometry_topic'),
-                "odometry_child_frame_id": LaunchConfiguration('odometry_child_frame_id'),
-                "base_lin_vel_timeout_sec": LaunchConfiguration('base_lin_vel_timeout_sec'),
-                "velocity_estimator_shadow_enabled": LaunchConfiguration('velocity_estimator_shadow_enabled'),
-                "velocity_estimator_checkpoint": LaunchConfiguration('velocity_estimator_checkpoint'),
-                "velocity_estimator_shadow_topic": LaunchConfiguration('velocity_estimator_shadow_topic'),
-                "velocity_estimator_shadow_log_dir": LaunchConfiguration('velocity_estimator_shadow_log_dir'),
-                "velocity_estimator_shadow_summary_interval_samples": LaunchConfiguration(
-                    'velocity_estimator_shadow_summary_interval_samples'
-                ),
-                "velocity_estimator_diagnostic_log_dir": LaunchConfiguration(
-                    'velocity_estimator_diagnostic_log_dir'
-                ),
-                "velocity_estimator_add_gravity_to_imu_acceleration": LaunchConfiguration(
-                    'velocity_estimator_add_gravity_to_imu_acceleration'
-                ),
-                "velocity_estimator_gravity_magnitude": LaunchConfiguration(
-                    'velocity_estimator_gravity_magnitude'
-                ),
-                "command_topic": LaunchConfiguration('command_topic'),
-                "traced_command_topic": LaunchConfiguration('traced_command_topic'),
-                "publish_legacy_commands": LaunchConfiguration('publish_legacy_commands'),
-                "publish_traced_commands": LaunchConfiguration('publish_traced_commands'),
-                "trace_event_topic": LaunchConfiguration('trace_event_topic'),
-                "publish_trace_events": LaunchConfiguration('publish_trace_events'),
-                "trace_source_id": LaunchConfiguration('trace_source_id'),
-                "trace_instance_id": LaunchConfiguration('trace_instance_id'),
-                "set_active_service_name": LaunchConfiguration('set_active_service_name'),
-                "set_policy_input_lock_service_name": LaunchConfiguration('set_policy_input_lock_service_name'),
-                "safety_limits_enabled": LaunchConfiguration('safety_limits_enabled'),
-                "safety_limits_path": LaunchConfiguration('safety_limits_path'),
-                "action_output_mapping": LaunchConfiguration('action_output_mapping'),
-                "actor_action_history_mode": LaunchConfiguration(
-                    'actor_action_history_mode'
-                ),
-                "joint_position_filter_tau_sec": LaunchConfiguration(
-                    'joint_position_filter_tau_sec'
-                ),
-            }]
-            
-        ),
+        shutdown_on_policy_exit,
+        policy_server,
     ])

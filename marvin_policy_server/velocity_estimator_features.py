@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import numpy as np
-from sensor_msgs.msg import Imu, JointState
+if TYPE_CHECKING:
+    from sensor_msgs.msg import Imu, JointState
 
 from .observation import quat_to_rot_matrix
 
@@ -20,11 +22,15 @@ class VelocityEstimatorFeatureBuilder:
         *,
         add_gravity_to_linear_acceleration: bool = False,
         gravity_magnitude: float = 9.81,
+        acceleration_scale: float = 1.0,
     ):
         self.joint_names = tuple(joint_names)
         self.default_positions = np.asarray(default_positions, dtype=np.float64).reshape(-1)
         self.add_gravity_to_linear_acceleration = bool(add_gravity_to_linear_acceleration)
         self.gravity_magnitude = float(gravity_magnitude)
+        self.acceleration_scale = float(acceleration_scale)
+        if not np.isfinite(self.acceleration_scale) or self.acceleration_scale <= 0:
+            raise ValueError('acceleration_scale must be finite and positive')
         if len(self.joint_names) != 12 or self.default_positions.shape != (12,):
             raise ValueError("The baseline velocity estimator requires Marvin's 12 motor joints")
         if not np.isfinite(self.gravity_magnitude) or self.gravity_magnitude <= 0.0:
@@ -66,6 +72,8 @@ class VelocityEstimatorFeatureBuilder:
             ],
             dtype=np.float64,
         )
+        # Convert the input units before adding gravity in SI units.
+        linear_acceleration *= self.acceleration_scale
         if self.add_gravity_to_linear_acceleration:
             # Isaac's ROS graph publishes kinematic acceleration (approximately
             # zero at rest). Isaac Lab ImuCfg, used for estimator training,

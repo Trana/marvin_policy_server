@@ -11,13 +11,15 @@ import numpy as np
 def test_policy_velocity_mapping_matches_runtime_axes_and_deadbands() -> None:
     np.testing.assert_allclose(
         policy_velocity_command_from_axes([0.5, 0.5, 0.0, -0.5]),
-        [0.75, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
     )
     np.testing.assert_allclose(
         policy_velocity_command_from_axes([0.05, -0.05, 0.0, 0.12]),
         [0.0, 0.0, 0.0],
     )
     np.testing.assert_allclose(policy_velocity_command_from_axes([]), [0.0, 0.0, 0.0])
+    for direction in (-1.0, 1.0):
+        assert policy_velocity_command_from_axes([0.0, direction])[0] == direction
 
 
 def test_session_writer_stores_raw_joy_and_derived_commands(tmp_path) -> None:
@@ -37,7 +39,7 @@ def test_session_writer_stores_raw_joy_and_derived_commands(tmp_path) -> None:
     assert len(rows) == 1
     assert rows[0]['sample_index'] == '0'
     assert float(rows[0]['elapsed_sec']) == 0.2
-    assert float(rows[0]['command_linear_x']) == 1.2
+    assert float(rows[0]['command_linear_x']) == 0.8
     assert float(rows[0]['command_linear_y']) == 0.4
     assert float(rows[0]['command_angular_z']) == -0.25
     assert json.loads(rows[0]['axes_json']) == [-0.25, 0.8, 0.0, 0.4]

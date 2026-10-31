@@ -1,7 +1,8 @@
-"""Policy inference and decimation management for Marvin policy server.
+"""Policy inference and held actions for Marvin policy server.
 
 This module wraps the logic for running the TorchScript policy at a reduced
-rate (decimation) while tracking the previous action.
+rate while tracking the previous action. The node supplies deadline decisions;
+callers omitting ``infer`` retain callback-count decimation.
 """
 from __future__ import annotations
 from dataclasses import dataclass
@@ -25,9 +26,15 @@ class PolicyRunner:
     def should_infer(self) -> bool:
         return self.counter % self.cfg.decimation == 0
 
-    def step(self, obs: np.ndarray | None):
-        """Advance one control tick, running policy only on decimated inference ticks."""
-        if self.should_infer():
+    def reset(self):
+        self.counter = 0
+        self.previous_action.fill(0.)
+        self.current_action.fill(0.)
+
+    def step(self, obs: np.ndarray | None, *, infer: bool | None = None):
+        """Infer or hold; use legacy decimation only when no decision is supplied."""
+        should_infer = self.should_infer() if infer is None else infer
+        if should_infer:
             if obs is None:
                 raise ValueError("Policy observation is required on inference ticks")
             with torch.no_grad():

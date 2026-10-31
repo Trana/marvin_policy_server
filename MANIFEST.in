@@ -1,0 +1,3 @@
+include CMakeLists.txt
+recursive-include native_io *.hpp *.cpp *.py CMakeLists.txt
+recursive-include docs *.md

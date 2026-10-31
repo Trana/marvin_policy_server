@@ -1,16 +1,22 @@
 import csv
 
 import numpy as np
+import pytest
 
 from marvin_policy_server.joy_command_recording import policy_velocity_command_from_axes
 from marvin_policy_server.joy_command_replay_node import command_to_axes, load_commands
 
 
 def test_command_to_axes_round_trips_deployed_mapping() -> None:
-    for command in ((1.2, -0.4, 0.3), (-0.8, 0.5, -0.6), (0.0, 0.0, 0.0)):
+    for command in ((1.0, -0.4, 0.3), (-0.8, 0.5, -0.6), (0.0, 0.0, 0.0)):
         np.testing.assert_allclose(
             policy_velocity_command_from_axes(command_to_axes(command)), command
         )
+
+
+def test_replay_rejects_old_out_of_range_commands() -> None:
+    with pytest.raises(ValueError, match='exceed'):
+        command_to_axes((1.2, 0.0, 0.0))
 
 
 def test_load_commands_reads_chopped_episode(tmp_path) -> None:

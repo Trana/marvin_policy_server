@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import time
 
 import torch
 
@@ -29,9 +30,19 @@ class ConcurrentPolicyRunner:
         self.latest_estimated_state: np.ndarray | None = None
         self.latest_effective_velocity: np.ndarray | None = None
         self.latest_foot_positions: np.ndarray | None = None
+        self.latest_result_monotonic: float | None = None
         self.history = EstimatorFeatureHistory(
             manifest.history_length, manifest.raw_feature_count
         )
+        if self.supports_velocity_override and not hasattr(policy, 'inference_snapshot'):
+            # Legacy combined artifacts expose the two modules separately.
+            # Compile that route before activation, without retaining warmup data.
+            with torch.inference_mode():
+                observation = torch.zeros(1, manifest.base_observation_count)
+                history = torch.zeros(1, manifest.history_length, manifest.raw_feature_count)
+                for _ in range(20):
+                    self._infer_with_estimate_overrides(observation, history, None, None, None, None)
+            self.reset()
 
     @property
     def supports_velocity_override(self) -> bool:
@@ -43,23 +54,8 @@ class ConcurrentPolicyRunner:
         return self.counter % self.decimation == 0
 
     def current_foot_positions(self) -> np.ndarray | None:
-        """Evaluate current history once to expose FK for a hold snapshot."""
-        if not self.supports_velocity_override or self.history.count == 0:
-            return None
-        history = torch.from_numpy(
-            self.history.values.copy()
-        ).unsqueeze(0)
-        with torch.inference_mode():
-            _, _, _, foot_positions = self.policy.estimator.actor_estimates(
-                history
-            )
-        values = foot_positions.detach().reshape(-1).cpu().numpy()
-        if values.shape != (12,) or not np.isfinite(values).all():
-            return None
-        self.latest_foot_positions = values.astype(
-            np.float64, copy=True
-        )
-        return self.latest_foot_positions.copy()
+        """Copy the last inference result without evaluating the estimator."""
+        return None if self.latest_foot_positions is None else self.latest_foot_positions.copy()
 
     def reset(self) -> None:
         """Reset action and estimator history on policy activation."""
@@ -68,6 +64,7 @@ class ConcurrentPolicyRunner:
         self.latest_estimated_state = None
         self.latest_effective_velocity = None
         self.latest_foot_positions = None
+        self.latest_result_monotonic = None
         self.history.reset()
 
     @staticmethod
@@ -152,9 +149,12 @@ class ConcurrentPolicyRunner:
         estimated_foot_positions_override: np.ndarray | None = None,
         estimated_foot_height_override: np.ndarray | None = None,
         estimated_contact_override: np.ndarray | None = None,
+        *,
+        infer: bool | None = None,
     ) -> np.ndarray:
-        """Advance one control tick and hold actions between inferences."""
-        if self.should_infer():
+        """Infer or hold; use legacy decimation only when no decision is supplied."""
+        should_infer = self.should_infer() if infer is None else infer
+        if should_infer:
             if observation is None or raw_features is None:
                 raise ValueError(
                     'Concurrent observation and estimator features are '
@@ -180,18 +180,23 @@ class ConcurrentPolicyRunner:
                         estimated_contact_override,
                     )
                 )
-                output = (
-                    self._infer_with_estimate_overrides(
-                        observation_tensor,
-                        history_tensor,
-                        estimated_velocity_override,
-                        estimated_foot_positions_override,
-                        estimated_foot_height_override,
-                        estimated_contact_override,
+                if not has_override and hasattr(self.policy, 'inference_snapshot'):
+                    action, state, feet = self.policy.inference_snapshot(observation_tensor, history_tensor)
+                    self.latest_foot_positions = feet.detach().reshape(-1).cpu().numpy().astype(np.float64, copy=True)
+                    output = (action, state)
+                else:
+                    output = (
+                        self._infer_with_estimate_overrides(
+                            observation_tensor,
+                            history_tensor,
+                            estimated_velocity_override,
+                            estimated_foot_positions_override,
+                            estimated_foot_height_override,
+                            estimated_contact_override,
+                        )
+                        if has_override or self.supports_velocity_override
+                        else self.policy(observation_tensor, history_tensor)
                     )
-                    if has_override
-                    else self.policy(observation_tensor, history_tensor)
-                )
                 if not isinstance(output, tuple) or len(output) != 2:
                     raise ValueError(
                         'Concurrent policy must return '
@@ -199,6 +204,10 @@ class ConcurrentPolicyRunner:
                     )
                 action, estimated_state = output
             action_values = action.detach().reshape(-1).cpu().numpy()
+            if self.latest_foot_positions is not None and (
+                self.latest_foot_positions.shape != (12,) or not np.isfinite(self.latest_foot_positions).all()
+            ):
+                raise ValueError('Concurrent policy returned invalid foot positions')
             state_values = estimated_state.detach().reshape(-1).cpu().numpy()
             if action_values.shape != (self.manifest.action_count,):
                 raise ValueError(
@@ -222,6 +231,7 @@ class ConcurrentPolicyRunner:
             self.latest_estimated_state = state_values.astype(
                 np.float64, copy=True
             )
+            self.latest_result_monotonic = time.monotonic()
             self.latest_effective_velocity = (
                 state_values[:3].astype(np.float64, copy=True)
                 if estimated_velocity_override is None

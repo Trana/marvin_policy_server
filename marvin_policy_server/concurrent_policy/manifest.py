@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from ..artifact_identity import artifact_identity
 
 
 SCHEMA = 'marvin.concurrent_policy_export.v1'
@@ -21,6 +22,7 @@ class ConcurrentPolicyManifest:
     estimated_state_count: int
     action_count: int
     path: Path
+    loaded_artifact: dict | None = None
 
 
 def load_concurrent_policy_manifest(
@@ -34,7 +36,8 @@ def load_concurrent_policy_manifest(
     if not metadata_path.is_file():
         return None
     try:
-        payload = json.loads(metadata_path.read_text(encoding='utf-8'))
+        content = metadata_path.read_bytes()
+        payload = json.loads(content)
     except (OSError, ValueError) as exc:
         raise ValueError(
             f'Cannot read concurrent policy metadata {metadata_path}: {exc}'
@@ -61,6 +64,7 @@ def load_concurrent_policy_manifest(
             estimated_state_count=int(dimensions['estimated_state']),
             action_count=int(dimensions['joint_action']),
             path=metadata_path,
+            loaded_artifact=artifact_identity(metadata_path, content),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(
