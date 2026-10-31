@@ -7,6 +7,7 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
+from marvin_policy_server.execution_outcome import ExecutionOutcome
 from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
 from marvin_policy_server.native_protocol import Kind, Packet
 from marvin_policy_server.native_server import NativePolicyServer
@@ -229,14 +230,15 @@ def test_native_activation_occurs_only_after_parent_validation(monkeypatch):
     server = server_without_node()
     server._activation_mgr = SimpleNamespace(state=SimpleNamespace(active=False, activation_start_time=None))
     order = []
-    def validate(_self, request, response):
+    def validate(_self, active):
+        response = ExecutionOutcome()
         order.append('validated')
         response.success = True
         return response
     def native(packet):
         order.append(packet.kind)
         return Packet(Kind.ACK, generation=4, flags=Flags.SUCCESS, ros_ns=10_000_000_000)
-    monkeypatch.setattr(MarvinPolicyServer, '_set_active_cb', validate)
+    monkeypatch.setattr(MarvinPolicyServer, 'request_activation', validate)
     server._native_channel = SimpleNamespace(control=native)
     response = server._set_active_cb(SimpleNamespace(data=True), SimpleNamespace())
     assert response.success
@@ -249,11 +251,12 @@ def test_failed_native_activation_invalidates_local_active_state(monkeypatch):
     server._logger = Mock()
     server._native_fault = None
     server._activation_mgr = SimpleNamespace(state=SimpleNamespace(active=False))
-    def validate(_self, request, response):
+    def validate(_self, active):
+        response = ExecutionOutcome()
         server._activation_mgr.state.active = True
         response.success = True
         return response
-    monkeypatch.setattr(MarvinPolicyServer, '_set_active_cb', validate)
+    monkeypatch.setattr(MarvinPolicyServer, 'request_activation', validate)
     server._native_channel = SimpleNamespace(control=lambda packet: Packet(Kind.ACK), send=Mock())
     response = server._set_active_cb(SimpleNamespace(data=True), SimpleNamespace())
     assert not response.success

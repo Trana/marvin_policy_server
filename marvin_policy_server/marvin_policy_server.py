@@ -24,6 +24,7 @@ import os
 import time
 from array import array
 from pathlib import Path
+from .execution_outcome import ExecutionOutcome
 from .artifact_identity import artifact_identity
 import yaml
 from ament_index_python.packages import get_package_share_directory
@@ -780,43 +781,52 @@ class MarvinPolicyServer(PolicyNode):
         return int(trace_id)
 
     def _prepare_execution(self, request, response):
+        outcome = self.prepare_execution(request.generation, request.initial_state_json)
+        response.success, response.message = outcome.success, outcome.message
+        return response
+
+    def _set_active_cb(self, request, response):
+        outcome = self.request_activation(request.data)
+        response.success, response.message = outcome.success, outcome.message
+        return response
+
+    def prepare_execution(self, generation: str, initial_state_json: str) -> ExecutionOutcome:
+        outcome = ExecutionOutcome()
         try:
             if not self._execution_gateway:
                 raise ValueError('Policy is not configured for gateway output')
             ready, reason = self._base_lin_vel_readiness()
             if not ready:
                 raise ValueError(reason)
-            self._execution_preparation.prepare(request.generation, request.initial_state_json,
+            self._execution_preparation.prepare(generation, initial_state_json,
                                                 released=self._execution_state()['output_released'])
-            response.success, response.message = True, 'Policy prepared; output authority not granted'
+            outcome.success, outcome.message = True, 'Policy prepared; output authority not granted'
         except (ValueError, KeyError, TypeError) as error:
-            response.success, response.message = False, str(error)
-        return response
+            outcome.success, outcome.message = False, str(error)
+        return outcome
 
-    def _set_active_cb(self, request, response):
-        """Handle SetBool to enable/disable policy output.
-
-        When activating: start ramp timer. When deactivating: reset actions and publish default stance once.
-        """
-        if request.data and getattr(self, '_execution_gateway', False):
+    def request_activation(self, active: bool) -> ExecutionOutcome:
+        """Change activation and reset inference state on the existing executor thread."""
+        outcome = ExecutionOutcome()
+        if active and getattr(self, '_execution_gateway', False):
             try:
                 self._execution_preparation.start()
             except ValueError as error:
-                response.success, response.message = False, str(error)
-                return response
-        if request.data:
+                outcome.success, outcome.message = False, str(error)
+                return outcome
+        if active:
             ready, readiness_message = self._base_lin_vel_readiness()
             if not ready:
-                response.success = False
-                response.message = f"Policy activation rejected: {readiness_message}"
-                self._logger.warn(response.message)
-                return response
+                outcome.success = False
+                outcome.message = f"Policy activation rejected: {readiness_message}"
+                self._logger.warn(outcome.message)
+                return outcome
         now = self.get_clock().now().nanoseconds * 1e-9
         self._invalidate_async_inference()
-        if request.data:
+        if active:
             success, msg = self._activation_mgr.request_activate(now)
-            response.success = success
-            response.message = msg
+            outcome.success = success
+            outcome.message = msg
             if success:
                 self._async_fault = None
             if success and hasattr(self, '_inference_schedule'):
@@ -836,9 +846,9 @@ class MarvinPolicyServer(PolicyNode):
         else:
             # Provide current action (unscaled raw) for ramp start
             success, msg = self._activation_mgr.request_deactivate(now, self.action)
-            response.success = success
-            response.message = msg
-        return response
+            outcome.success = success
+            outcome.message = msg
+        return outcome
 
     def _set_policy_input_lock_cb(self, request, response):
         values = None if request.use_latest else list(request.values)

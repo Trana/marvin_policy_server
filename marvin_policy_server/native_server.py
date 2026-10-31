@@ -18,6 +18,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.time import Time
 
+from .execution_outcome import ExecutionOutcome
 from .inference_schedule import InferenceSchedule
 from .marvin_policy_server import MarvinPolicyServer
 from .native_channel import NativeChannel
@@ -161,10 +162,10 @@ class NativePolicyServer(MarvinPolicyServer):
     def _next_trace_id(self):
         return self._frame.trace_id if self._frame is not None else super()._next_trace_id()
 
-    def _prepare_execution(self, request, response):
-        response = super()._prepare_execution(request, response)
-        if not response.success:
-            return response
+    def prepare_execution(self, generation: str, initial_state_json: str) -> ExecutionOutcome:
+        outcome = super().prepare_execution(generation, initial_state_json)
+        if not outcome.success:
+            return outcome
         try:
             preparation = self._execution_preparation
             ack = self._native_channel.control(Packet(
@@ -175,49 +176,50 @@ class NativePolicyServer(MarvinPolicyServer):
             self._observe_generation(ack.generation)
         except Exception as error:
             self._execution_preparation.generation = None
-            response.success, response.message = False, str(error)
-        return response
+            outcome.success, outcome.message = False, str(error)
+        return outcome
 
-    def _set_active_cb(self, request, response):
+    def request_activation(self, active: bool) -> ExecutionOutcome:
+        outcome = ExecutionOutcome()
         if self._native_channel is None:
-            response.success, response.message = False, 'Native I/O is not ready'
-            return response
-        if not request.data and self._native_output_process_exited():
+            outcome.success, outcome.message = False, 'Native I/O is not ready'
+            return outcome
+        if not active and self._native_output_process_exited():
             self._fail_native('Native output process exited', notify=False)
-            response.success, response.message = True, 'Native output process exited; output released'
-            return response
-        if request.data and self._activation_mgr.state.active:
+            outcome.success, outcome.message = True, 'Native output process exited; output released'
+            return outcome
+        if active and self._activation_mgr.state.active:
             fresh = (time.monotonic() - self._native_status_at < .5 and
                      self._native_status_generation == self._native_generation)
-            response.success = bool(fresh and self._native_status_flags & Flags.ACTIVE)
-            response.message = 'Already active' if response.success else 'Native activation state is not confirmed'
-            return response
+            outcome.success = bool(fresh and self._native_status_flags & Flags.ACTIVE)
+            outcome.message = 'Already active' if outcome.success else 'Native activation state is not confirmed'
+            return outcome
         try:
             # Validate preparation and reset inference before granting native output.
-            # This callback and inference share the same ROS executor thread.
-            response = super()._set_active_cb(request, response)
-            if not response.success:
-                return response
+            # This operation and inference share the same ROS executor thread.
+            outcome = super().request_activation(active)
+            if not outcome.success:
+                return outcome
             previous_action = self.action.copy()
-            ack = self._native_channel.control(Packet(Kind.ACTIVATE if request.data else Kind.DEACTIVATE))
+            ack = self._native_channel.control(Packet(Kind.ACTIVATE if active else Kind.DEACTIVATE))
             if not ack.flags & Flags.SUCCESS:
                 raise ValueError('Native activation rejected: sensor inputs or preparation are not ready')
             self._observe_generation(ack.generation)
-            if not request.data:
+            if not active:
                 self.action = previous_action
                 if self._execution_gateway:
                     self._execution_preparation.generation = None
                     self._activation_mgr.state.deactivation_start_time = None
                     self._activation_mgr.state.deactivation_start_action = None
-                    response.message = 'Native policy output released'
+                    outcome.message = 'Native policy output released'
             self._native_fault = None
-            if request.data:
+            if active:
                 self._activation_mgr.state.activation_start_time = ack.ros_ns / 1e9
-            return response
+            return outcome
         except Exception as exc:
             self._fail_native(str(exc))
-            response.success, response.message = False, f'Native policy operation failed: {exc}'
-            return response
+            outcome.success, outcome.message = False, f'Native policy operation failed: {exc}'
+            return outcome
 
     def _apply_policy_input_lock(self, input_name, locked, values=None):
         result = super()._apply_policy_input_lock(input_name, locked, values)
