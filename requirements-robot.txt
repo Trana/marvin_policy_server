@@ -1,0 +1,10 @@
+# Install with PYTHONNOUSERSITE=1 so dependencies are not borrowed from ~/.local.
+filelock==3.13.3
+fsspec==2024.3.1
+mpmath==1.3.0
+networkx==3.4.2
+sympy==1.13.1
+typing-extensions==4.10.0
+# Raspberry Pi 4 / Cortex-A72 compatibility pin. PyTorch 2.6.0's ARM64 wheel
+# imports on this host but raises SIGILL while loading the packaged TorchScript.
+torch==2.5.1

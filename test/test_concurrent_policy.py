@@ -25,6 +25,34 @@ class _Policy:
         return action, estimated_state
 
 
+def test_snapshot_refreshes_once_per_inference_and_clears_on_reset(tmp_path):
+    class SnapshotPolicy:
+        calls = 0
+
+        def inference_snapshot(self, observation, history):
+            self.calls += 1
+            return torch.zeros(1, 2), torch.zeros(1, 11), torch.full((1, 4, 3), float(self.calls))
+
+    _, manifest = _manifest(tmp_path)
+    policy = SnapshotPolicy()
+    runner = ConcurrentPolicyRunner(policy, manifest, decimation=1)
+    assert runner.current_foot_positions() is None
+    assert runner.latest_result_monotonic is None
+    for expected in (1, 2):
+        runner.step(np.zeros(4), np.zeros(3), infer=True)
+        for _ in range(10):
+            values = runner.current_foot_positions()
+            np.testing.assert_allclose(values, expected)
+            values[:] = -100  # A reader cannot change the cache.
+        assert policy.calls == expected
+        assert runner.latest_result_monotonic is not None
+    runner.step(None, infer=False)
+    assert policy.calls == 2
+    runner.reset()
+    assert runner.current_foot_positions() is None
+    assert runner.latest_result_monotonic is None
+
+
 class _Estimator:
     def actor_estimates(self, history):
         batch = history.shape[0]
@@ -61,6 +89,27 @@ class _AuxSplitPolicy(_Policy):
     actor = _AuxActor()
 
 
+def test_legacy_split_route_refreshes_cache_without_second_estimator_call(tmp_path):
+    class CountingEstimator(_Estimator):
+        calls = 0
+
+        def actor_estimates(self, history):
+            self.calls += 1
+            velocity, height, contact, feet = super().actor_estimates(history)
+            return velocity, height, contact, feet + history[0, -1, 0]
+
+    policy = _SplitPolicy()
+    policy.estimator = CountingEstimator()
+    _, manifest = _manifest(tmp_path)
+    runner = ConcurrentPolicyRunner(policy, manifest, decimation=1)
+    warmed_calls = policy.estimator.calls
+    assert runner.latest_foot_positions is None
+    for index in (1, 2):
+        runner.step(np.zeros(4), np.full(3, index), infer=True)
+        np.testing.assert_allclose(runner.current_foot_positions(), index)
+        assert policy.estimator.calls == warmed_calls + index
+
+
 def _manifest(directory: Path):
     policy_path = directory / 'combined_policy.pt'
     policy_path.write_bytes(b'test')
@@ -84,6 +133,17 @@ def _manifest(directory: Path):
     return policy_path, load_concurrent_policy_manifest(policy_path)
 
 
+def test_deadline_decision_overrides_concurrent_decimation(tmp_path):
+    _, manifest = _manifest(tmp_path)
+    runner = ConcurrentPolicyRunner(_Policy(), manifest, decimation=4)
+    np.testing.assert_allclose(runner.step(None, infer=False), [0, 0])
+    action = runner.step(np.ones(4), np.ones(3), infer=True)
+    np.testing.assert_allclose(action, [2, 2])
+    action = runner.step(np.ones(4) * 2, np.ones(3), infer=True)
+    np.testing.assert_allclose(action, [3, 3])
+    np.testing.assert_allclose(runner.step(None, infer=False), [3, 3])
+
+
 def test_history_repeats_first_frame_and_resets():
     """The first received frame fills warmup history and reset clears it."""
     history = EstimatorFeatureHistory(3, 2)
@@ -104,6 +164,8 @@ def test_manifest_and_runner_preserve_decimation(tmp_path: Path):
     """The runner infers only on decimated ticks and holds its action."""
     _, manifest = _manifest(tmp_path)
     assert manifest is not None
+    from marvin_policy_server.artifact_identity import artifact_identity
+    assert manifest.loaded_artifact == artifact_identity(manifest.path, manifest.path.read_bytes())
     runner = ConcurrentPolicyRunner(_Policy(), manifest, decimation=2)
 
     first = runner.step(

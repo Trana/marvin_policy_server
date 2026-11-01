@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             # LEFT = name you run, RIGHT = package.module:function
             'marvin_policy_server = marvin_policy_server.marvin_policy_server:main',
+            'marvin_policy_server_native = marvin_policy_server.native_server:main',
             'marvin_delay_test = marvin_policy_server.delay_test_node:main',
             'joy_command_recorder = marvin_policy_server.joy_command_recorder_node:main',
             'joy_command_replay = marvin_policy_server.joy_command_replay_node:main',

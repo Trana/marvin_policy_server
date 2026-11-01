@@ -39,7 +39,9 @@ def command_to_axes(command: tuple[float, float, float]) -> list[float]:
     """Invert Marvin's deployed Joy mapping for an already-mapped command."""
 
     linear_x, linear_y, angular_z = command
-    forward_axis = linear_x / 1.5 if linear_x >= 0.0 else linear_x
+    if not all(-1.0 <= value <= 1.0 for value in command):
+        raise ValueError('Replay commands exceed the current +/-1 velocity mapping')
+    forward_axis = linear_x
     return [angular_z, forward_axis, 1.0, linear_y, 0.0, 1.0, 0.0, 0.0]
 
 

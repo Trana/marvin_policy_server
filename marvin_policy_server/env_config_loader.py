@@ -5,6 +5,7 @@ from typing import Any, Sequence
 
 import numpy as np
 import yaml
+from .artifact_identity import artifact_identity
 
 
 class EnvYamlLoader(yaml.SafeLoader):
@@ -37,13 +38,18 @@ class EnvConfigLoader:
     def __init__(self, env_path: str | Path):
         self._env_path = Path(env_path)
         self._data: dict[str, Any] | None = None
+        self.loaded_artifact = None
 
     def _load(self) -> dict[str, Any]:
         if self._data is None:
-            with self._env_path.open("r", encoding="utf-8") as handle:
-                # env.yaml uses !!python/tuple and python/object/apply:builtins.slice.
-                self._data = yaml.load(handle, Loader=EnvYamlLoader)
+            content = self._env_path.read_bytes()
+            # env.yaml uses !!python/tuple and python/object/apply:builtins.slice.
+            self._data = yaml.load(content.decode('utf-8'), Loader=EnvYamlLoader)
+            self.loaded_artifact = artifact_identity(self._env_path, content)
         return self._data
+
+    def get_deployment_timing(self):
+        return self._load().get('actions', {}).get('joint_pos', {}).get('deployment_timing')
 
     def get_default_joint_positions(self) -> np.ndarray:
         data = self._load()

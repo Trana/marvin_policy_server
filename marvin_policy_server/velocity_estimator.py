@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import io
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
+from .artifact_identity import artifact_identity
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,9 @@ class VelocityEstimator:
 
     def __init__(self, checkpoint_path: Path):
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
-        checkpoint = torch.load(self.checkpoint_path, map_location="cpu", weights_only=True)
+        content = self.checkpoint_path.read_bytes()
+        checkpoint = torch.load(io.BytesIO(content), map_location="cpu", weights_only=True)
+        self.loaded_artifact = artifact_identity(self.checkpoint_path, content)
         raw_config = checkpoint["model_config"]
         self.config = VelocityEstimatorConfig(
             history_length=int(raw_config["history_length"]),
