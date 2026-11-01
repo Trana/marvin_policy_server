@@ -43,6 +43,12 @@ releases candidate authority and requires a new preparation and activation.
 that native publication, not actuator application. The existing inference expiry
 prevents old inference from being republished indefinitely with fresh stamps.
 
+Each native tick applies current clock, sensor, and permission state before it
+reads queued policy results. It then enforces the unchanged 100 ms inference
+deadline before publication. This order lets an already-arrived fresh result
+replace an expired accepted result. If no fresh replacement exists, the native
+gate faults and still requires explicit reactivation.
+
 ## Verification
 
 - `native_io/gateway_output_test.cpp`: preparation expiry, handover, epoch rebinding,
