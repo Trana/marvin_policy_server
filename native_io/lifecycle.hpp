@@ -71,9 +71,15 @@ class Lifecycle {
 
   void enforce_deadlines(uint64_t steady_ns, uint64_t ros_ns) {
     if (!enabled_ || !sensors_valid_ || paused_ || !clock_progress_) return;
-    if (pending_ && !fresh(*pending_, steady_ns, ros_ns))
-      expire("pending", steady_ns, ros_ns);
-    else if (accepted_ && !fresh(*accepted_, steady_ns, ros_ns))
+    // The pending request owns inference progress. A stale accepted result is
+    // already suppressed by can_publish(); it must not fault a newer request
+    // that still has time remaining in its own request-age budget.
+    if (pending_) {
+      if (!fresh(*pending_, steady_ns, ros_ns))
+        expire("pending", steady_ns, ros_ns);
+      return;
+    }
+    if (accepted_ && !fresh(*accepted_, steady_ns, ros_ns))
       expire("accepted", steady_ns, ros_ns);
   }
 

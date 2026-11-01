@@ -14,6 +14,12 @@ limit, and the previous C++ tick gap. Missing requests are `null`. Ages are meas
 from request creation, not model completion. The snapshot survives ownership
 invalidation and is cleared by explicit activation or stop.
 
+A pending request owns inference progress until its request age exceeds the limit.
+An older accepted result can become too stale to publish while that request is
+still valid; this creates a bounded publication gap, not an immediate fault. If
+there is no pending replacement, accepted-result expiry remains a fault. Result
+acceptance time never resets either request age.
+
 `NATIVE_PYTHON_FAULT` records the last processed request's sequence/generation,
 request-to-callback age, total callback time and request-to-result-send age.
 The callback includes observation work and publication bookkeeping, not just

@@ -46,8 +46,12 @@ prevents old inference from being republished indefinitely with fresh stamps.
 Each native tick applies current clock, sensor, and permission state before it
 reads queued policy results. It then enforces the unchanged 100 ms inference
 deadline before publication. This order lets an already-arrived fresh result
-replace an expired accepted result. If no fresh replacement exists, the native
-gate faults and still requires explicit reactivation.
+replace an expired accepted result. Accepted-result age controls publication;
+pending-request age controls inference progress. While a newer pending request
+remains within 100 ms, an expired accepted result is not published and does not
+fault the gate. The pending request faults if it exceeds its own 100 ms limit.
+An expired accepted result with no replacement in flight also faults. Either
+fault still requires explicit reactivation.
 
 ## Verification
 
