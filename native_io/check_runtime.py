@@ -329,14 +329,18 @@ def check(binary, model, env, sim_clock=False, dynamic=False, gateway=False):
         call(active, SetBool.Request(data=True))
         spin(.5)
         original_step = server._policy_runner.step
+        baseline_callback_ms = server._native_request_timing['callback_ms']
+        target_callback_ms = 65.
+        injected_delay_s = max(0., (target_callback_ms - baseline_callback_ms) / 1000.)
 
         def bounded_delay(*args, **kwargs):
-            time.sleep(.065)
+            time.sleep(injected_delay_s)
             return original_step(*args, **kwargs)
 
         before = len(commands)
         server._policy_runner.step = bounded_delay
         spin(.8)
+        observed_callback_ms = server._native_request_timing['callback_ms']
         server._policy_runner.step = original_step
         assert server._native_fault is None, server._native_fault
         delayed_commands = commands[before:]
@@ -347,7 +351,10 @@ def check(binary, model, env, sim_clock=False, dynamic=False, gateway=False):
         ]
         assert not delayed_gaps or max(delayed_gaps) < consumer.max_age
         results['bounded_inflight_delay'] = {
-            'delay_ms': 65,
+            'target_callback_ms': target_callback_ms,
+            'baseline_callback_ms': baseline_callback_ms,
+            'injected_delay_ms': injected_delay_s * 1000.,
+            'observed_callback_ms': observed_callback_ms,
             'command_samples': len(delayed_commands),
             'max_command_gap_ms': max(delayed_gaps, default=0.) * 1000.,
         }
