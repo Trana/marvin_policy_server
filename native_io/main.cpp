@@ -302,7 +302,7 @@ class NativeIo : public rclcpp::Node {
       sensors_ = joint_valid_ && imu_valid_ && fresh(ros, joint_stamp_, 500000000) && fresh(ros, imu_stamp_, 500000000) &&
                  fresh(mono, joint_receipt_, 500000000) && fresh(mono, imu_receipt_, 500000000);
       const auto generation = gate_.generation();
-      gate_.update(mono, ros, sensors_, !required_ || (permission_ && fresh(mono, permission_receipt_, 300000000)));
+      gate_.observe(mono, ros, sensors_, !required_ || (permission_ && fresh(mono, permission_receipt_, 300000000)));
       if (last_ros_ && ros < *last_ros_) {
         last_output_valid_ = false; next_publish_ = ros;
         if (gateway_mode_) { gate_.stop(); gateway_.stop(); }
@@ -315,6 +315,22 @@ class NativeIo : public rclcpp::Node {
         gateway_.rebind(gate_.generation());
       }
       incoming(mono, ros);
+      // Gateway results already passed the request-age check in accept().
+      // Publish and commit them immediately instead of spending the remaining
+      // deadline budget waiting for the next 20 ms publication phase. A slow
+      // but fresh result can otherwise expire immediately before that phase.
+      bool result_published = false;
+      if (gateway_mode_ && pending_commit_ && gate_.can_publish(mono, ros)) {
+        auto policy = result_flags_ & Flags::direct_output
+            ? action_ : output_->map(action_, ramp_->activation_factor(ros / 1e9));
+        publish(policy, mono, ros);
+        next_publish_ = ros + 20000000ULL;
+        result_published = true;
+      }
+      // Apply current safety state before accepting queued results. Enforce the
+      // deadline after the drain and immediate commit so an already-arrived
+      // fresh result can replace an expired accepted result.
+      gate_.enforce_deadlines(mono, ros);
       if (!rclcpp::ok()) return;
       if (!output_) {
         if (mono - boot_ > 10000000000ULL) throw std::runtime_error("Native configuration timeout");
@@ -361,7 +377,7 @@ class NativeIo : public rclcpp::Node {
           }
         }
       }
-      if (ros >= next_publish_) {
+      if (!result_published && ros >= next_publish_) {
         if (gate_.can_publish(mono, ros)) {
           auto policy = result_flags_ & Flags::direct_output ? action_ : output_->map(action_, ramp_->activation_factor(ros / 1e9));
           publish(policy, mono, ros);

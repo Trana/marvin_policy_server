@@ -43,6 +43,16 @@ releases candidate authority and requires a new preparation and activation.
 that native publication, not actuator application. The existing inference expiry
 prevents old inference from being republished indefinitely with fresh stamps.
 
+Each native tick applies current clock, sensor, and permission state before it
+reads queued policy results. It then enforces the unchanged 100 ms inference
+deadline before publication. This order lets an already-arrived fresh result
+replace an expired accepted result. Accepted-result age controls publication;
+pending-request age controls inference progress. While a newer pending request
+remains within 100 ms, an expired accepted result is not published and does not
+fault the gate. The pending request faults if it exceeds its own 100 ms limit.
+An expired accepted result with no replacement in flight also faults. Either
+fault still requires explicit reactivation.
+
 ## Verification
 
 - `native_io/gateway_output_test.cpp`: preparation expiry, handover, epoch rebinding,
@@ -63,3 +73,22 @@ simulated-clock fixture, use an explicitly non-timed environment: timed simulati
 remains a Python-backend contract and is not silently disabled by product code.
 
 Evidence: `marvin-measurements/native-policy-gateway-20261029/`.
+
+## Deployed follow-up accepted on 2026-11-02
+
+Gateway mode publishes and commits a fresh pending result immediately after
+receipt, before deadline enforcement and the next 20 ms publication phase.
+Request-age validation, generation fencing and explicit recovery remain active.
+
+`PolicyGcLifecycle` suppresses automatic Python cyclic garbage collection while
+native output may be active. Reference counting remains enabled. Deactivation or
+a sent fault only requests restoration; confirmed native output release or child
+exit restores the prior GC state without an explicit collection.
+
+The user accepted the existing real-robot run for controller ticket #1 after
+matching the deployed Python files and native source to this worktree. The final
+20k capture retained 55 fault-free policy supervisor samples over 56.589 seconds.
+Shutdown-associated faults remain tracked in `Trana/marvin_wiki#22`. This evidence
+does not establish walking stability or moving-policy recovery hold.
+Evidence: `marvin-measurements/executor-final-20261102` and
+`marvin-measurements/recorder-20k-check-20261102`.

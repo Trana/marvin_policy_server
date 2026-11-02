@@ -46,8 +46,8 @@ class Lifecycle {
     ++generation_; pending_.reset(); accepted_.reset(); deadline_.reset();
   }
 
-  void update(uint64_t steady_ns, uint64_t ros_ns, bool sensors_valid,
-              bool movement_permitted) {
+  void observe(uint64_t steady_ns, uint64_t ros_ns, bool sensors_valid,
+               bool movement_permitted) {
     // A steady-clock reversal violates this process's timing assumptions.
     if (last_steady_ && steady_ns < *last_steady_) {
       fail(Fault::invalid_result); return;
@@ -67,10 +67,19 @@ class Lifecycle {
     last_ros_ = ros_ns; last_steady_ = steady_ns;
     sensors_valid_ = sensors_valid;
     permission_ = movement_permitted; permission_known_ = true;
+  }
+
+  void enforce_deadlines(uint64_t steady_ns, uint64_t ros_ns) {
     if (!enabled_ || !sensors_valid_ || paused_ || !clock_progress_) return;
-    if (pending_ && !fresh(*pending_, steady_ns, ros_ns))
-      expire("pending", steady_ns, ros_ns);
-    else if (accepted_ && !fresh(*accepted_, steady_ns, ros_ns))
+    // The pending request owns inference progress. A stale accepted result is
+    // already suppressed by can_publish(); it must not fault a newer request
+    // that still has time remaining in its own request-age budget.
+    if (pending_) {
+      if (!fresh(*pending_, steady_ns, ros_ns))
+        expire("pending", steady_ns, ros_ns);
+      return;
+    }
+    if (accepted_ && !fresh(*accepted_, steady_ns, ros_ns))
       expire("accepted", steady_ns, ros_ns);
   }
 

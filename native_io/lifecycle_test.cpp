@@ -4,14 +4,21 @@
 using namespace marvin::native_io;
 #define CHECK(condition) do { if (!(condition)) throw std::runtime_error(#condition); } while (false)
 constexpr uint64_t ms = 1000000;
+constexpr uint64_t us = 1000;
 
 Lifecycle started() {
   Lifecycle gate;
   CHECK(!gate.enabled());
-  gate.update(1 * ms, 1 * ms, true, true);
+  gate.observe(1 * ms, 1 * ms, true, true);
   CHECK(!gate.request(1 * ms, 1 * ms));
   gate.activate();
   return gate;
+}
+
+void tick(Lifecycle &gate, uint64_t steady_ns, uint64_t ros_ns,
+          bool sensors_valid, bool movement_permitted) {
+  gate.observe(steady_ns, ros_ns, sensors_valid, movement_permitted);
+  gate.enforce_deadlines(steady_ns, ros_ns);
 }
 
 int main() {
@@ -19,16 +26,48 @@ int main() {
     auto gate = started();
     auto old = gate.request(ms, ms); CHECK(old);
     CHECK(gate.accept(*old, 2 * ms, 2 * ms));
-    gate.update(81 * ms, 81 * ms, true, true);
-    auto pending = gate.request(81 * ms, 81 * ms); CHECK(pending);
-    gate.update(101 * ms, 101 * ms, true, true);
+    const auto pending_at = 40 * ms + 651 * us;
+    tick(gate, pending_at, pending_at, true, true);
+    auto pending = gate.request(pending_at, pending_at); CHECK(pending);
+    const auto fault_tick = 101 * ms + 684 * us;
+    gate.observe(fault_tick, fault_tick, true, true);
+    gate.enforce_deadlines(fault_tick, fault_tick);
+    CHECK(gate.enabled()); CHECK(!gate.expiry());
+    CHECK(!gate.can_publish(fault_tick, fault_tick)); // Never publish the stale accepted result.
+    const auto result_at = pending_at + 67 * ms + 863 * us;
+    gate.observe(result_at, result_at, true, true);
+    CHECK(gate.accept(*pending, result_at, result_at));
+    gate.enforce_deadlines(result_at, result_at);
+    CHECK(gate.enabled()); CHECK(!gate.expiry());
+    CHECK(gate.can_publish(result_at, result_at));
+  }
+  {
+    auto gate = started();
+    auto old = gate.request(ms, ms); CHECK(old);
+    CHECK(gate.accept(*old, 2 * ms, 2 * ms));
+    tick(gate, 41 * ms, 41 * ms, true, true);
+    auto pending = gate.request(41 * ms, 41 * ms); CHECK(pending);
+    tick(gate, 141 * ms, 141 * ms, true, true);
     CHECK(gate.enabled()); CHECK(!gate.expiry()); // Exactly 100 ms remains valid.
-    gate.update(102 * ms, 102 * ms, true, true);
-    CHECK(std::string(gate.expiry()->branch) == "accepted");
+    CHECK(!gate.can_publish(141 * ms, 141 * ms));
+    tick(gate, 142 * ms, 142 * ms, true, true);
+    CHECK(!gate.enabled()); CHECK(gate.fault() == Fault::inference_expired);
+    CHECK(std::string(gate.expiry()->branch) == "pending");
     CHECK(gate.expiry()->pending->sequence == pending->sequence);
+    gate.activate(); CHECK(gate.request(142 * ms, 142 * ms));
+  }
+  {
+    auto gate = started();
+    auto old = gate.request(ms, ms); CHECK(old);
+    CHECK(gate.accept(*old, 2 * ms, 2 * ms));
+    gate.observe(102 * ms, 102 * ms, true, true);
+    CHECK(gate.enabled()); CHECK(!gate.expiry());
+    CHECK(!gate.can_publish(102 * ms, 102 * ms));
+    gate.enforce_deadlines(102 * ms, 102 * ms);
+    CHECK(std::string(gate.expiry()->branch) == "accepted");
+    CHECK(!gate.expiry()->pending);
     CHECK(gate.expiry()->accepted->sequence == old->sequence);
     CHECK(gate.expiry()->generation == old->generation);
-    CHECK(!gate.accept(*pending, 102 * ms, 102 * ms)); // Diagnostics do not change ownership.
   }
   {
     auto gate = started();
@@ -52,24 +91,34 @@ int main() {
   }
   {
     auto gate = started();
+    auto request = gate.request(ms, ms); CHECK(request);
+    auto wrong = *request; ++wrong.sequence;
+    CHECK(!gate.accept(wrong, 2 * ms, 2 * ms));
+    tick(gate, 102 * ms, 102 * ms, true, true);
+    CHECK(gate.fault() == Fault::inference_expired);
+    CHECK(std::string(gate.expiry()->branch) == "pending");
+    CHECK(gate.expiry()->pending->sequence == request->sequence);
+  }
+  {
+    auto gate = started();
     auto before = gate.request(ms, ms); CHECK(before);
-    gate.update(5 * ms, 5 * ms, true, false);
+    tick(gate, 5 * ms, 5 * ms, true, false);
     CHECK(gate.enabled()); CHECK(!gate.movement_permitted());
     CHECK(!gate.accept(*before, 6 * ms, 6 * ms));
     auto neutral = gate.request(6 * ms, 6 * ms); CHECK(neutral);
     CHECK(gate.accept(*neutral, 7 * ms, 7 * ms));
     CHECK(gate.can_publish(7 * ms, 7 * ms));  // Balance remains possible.
-    gate.update(8 * ms, 8 * ms, true, true);
+    tick(gate, 8 * ms, 8 * ms, true, true);
     CHECK(!gate.can_publish(8 * ms, 8 * ms));
     CHECK(gate.request(8 * ms, 8 * ms));
   }
   {
     auto gate = started();
     auto request = gate.request(ms, ms); CHECK(request);
-    gate.update(2 * ms, 2 * ms, false, true);
+    tick(gate, 2 * ms, 2 * ms, false, true);
     CHECK(!gate.accept(*request, 3 * ms, 3 * ms));
     CHECK(!gate.request(3 * ms, 3 * ms));
-    gate.update(4 * ms, 4 * ms, true, true);
+    tick(gate, 4 * ms, 4 * ms, true, true);
     CHECK(gate.request(4 * ms, 4 * ms));
   }
   {
@@ -81,7 +130,7 @@ int main() {
     CHECK(std::string(gate.expiry()->branch) == "arriving_result");
     CHECK(gate.expiry()->pending->sequence == request->sequence);
     CHECK(gate.expiry()->steady_ns - gate.expiry()->pending->steady_ns == 101 * ms);
-    gate.update(103 * ms, 3 * ms, true, true);
+    tick(gate, 103 * ms, 3 * ms, true, true);
     CHECK(!gate.request(103 * ms, 3 * ms)); // No automatic restart.
     gate.activate(); CHECK(gate.request(103 * ms, 3 * ms));
     CHECK(!gate.expiry());
@@ -89,7 +138,7 @@ int main() {
   {
     auto gate = started();
     CHECK(gate.request(ms, ms));
-    gate.update(102 * ms, 102 * ms, true, true);
+    tick(gate, 102 * ms, 102 * ms, true, true);
     CHECK(!gate.enabled()); CHECK(gate.fault() == Fault::inference_expired);
     CHECK(std::string(gate.expiry()->branch) == "pending");
     CHECK(!gate.expiry()->accepted);
@@ -98,7 +147,9 @@ int main() {
     auto gate = started();
     auto request = gate.request(ms, ms); CHECK(request);
     CHECK(gate.accept(*request, 2 * ms, 2 * ms));
-    gate.update(102 * ms, 102 * ms, true, true);
+    tick(gate, 101 * ms, 101 * ms, true, true);
+    CHECK(gate.enabled()); CHECK(gate.can_publish(101 * ms, 101 * ms));
+    tick(gate, 102 * ms, 102 * ms, true, true);
     CHECK(!gate.can_publish(102 * ms, 102 * ms)); // Held action expires too.
     CHECK(std::string(gate.expiry()->branch) == "accepted");
     CHECK(gate.expiry()->accepted->sequence == request->sequence);
@@ -108,14 +159,14 @@ int main() {
   {
     auto gate = started();
     auto request = gate.request(ms, ms); CHECK(request);
-    gate.update(2 * ms, ms, true, true);
+    tick(gate, 2 * ms, ms, true, true);
     CHECK(!gate.can_publish(2 * ms, ms)); // No commands while ROS time is unchanged.
-    gate.update(101 * ms, ms, true, true);
+    tick(gate, 101 * ms, ms, true, true);
     CHECK(gate.paused()); CHECK(gate.enabled());
     CHECK(!gate.accept(*request, 101 * ms, ms));
-    gate.update(500 * ms, ms, true, true);
+    tick(gate, 500 * ms, ms, true, true);
     CHECK(gate.fault() == Fault::none);
-    gate.update(501 * ms, 2 * ms, true, true);
+    tick(gate, 501 * ms, 2 * ms, true, true);
     CHECK(!gate.paused()); CHECK(!gate.can_publish(501 * ms, 2 * ms));
     auto resumed = gate.request(501 * ms, 2 * ms); CHECK(resumed);
     CHECK(gate.accept(*resumed, 502 * ms, 3 * ms));
@@ -124,7 +175,7 @@ int main() {
   {
     auto gate = started();
     auto before = gate.request(ms, ms); CHECK(before);
-    gate.update(2 * ms, 0, true, true); // Simulator reset to zero.
+    tick(gate, 2 * ms, 0, true, true); // Simulator reset to zero.
     CHECK(!gate.accept(*before, 2 * ms, 0));
     auto after = gate.request(2 * ms, 0); CHECK(after);
     CHECK(after->generation != before->generation);
@@ -134,11 +185,11 @@ int main() {
     auto gate = started();
     auto request = gate.request(ms, ms); CHECK(request);
     CHECK(gate.accept(*request, 2 * ms, 2 * ms));
-    gate.update(76 * ms, 76 * ms, true, true);
+    tick(gate, 76 * ms, 76 * ms, true, true);
     auto late = gate.request(76 * ms, 76 * ms); CHECK(late);
     CHECK(gate.accept(*late, 77 * ms, 77 * ms));
     CHECK(!gate.request(77 * ms, 77 * ms)); // No catch-up burst.
-    gate.update(81 * ms, 81 * ms, true, true);
+    tick(gate, 81 * ms, 81 * ms, true, true);
     CHECK(gate.request(81 * ms, 81 * ms)); // Original 20 ms phase.
     gate.fail(Fault::transport_closed); CHECK(!gate.enabled());
   }
