@@ -315,9 +315,21 @@ class NativeIo : public rclcpp::Node {
         gateway_.rebind(gate_.generation());
       }
       incoming(mono, ros);
+      // Gateway results already passed the request-age check in accept().
+      // Publish and commit them immediately instead of spending the remaining
+      // deadline budget waiting for the next 20 ms publication phase. A slow
+      // but fresh result can otherwise expire immediately before that phase.
+      bool result_published = false;
+      if (gateway_mode_ && pending_commit_ && gate_.can_publish(mono, ros)) {
+        auto policy = result_flags_ & Flags::direct_output
+            ? action_ : output_->map(action_, ramp_->activation_factor(ros / 1e9));
+        publish(policy, mono, ros);
+        next_publish_ = ros + 20000000ULL;
+        result_published = true;
+      }
       // Apply current safety state before accepting queued results. Enforce the
-      // deadline after the drain so an already-arrived fresh result can replace
-      // an expired accepted result before any command publication.
+      // deadline after the drain and immediate commit so an already-arrived
+      // fresh result can replace an expired accepted result.
       gate_.enforce_deadlines(mono, ros);
       if (!rclcpp::ok()) return;
       if (!output_) {
@@ -365,7 +377,7 @@ class NativeIo : public rclcpp::Node {
           }
         }
       }
-      if (ros >= next_publish_) {
+      if (!result_published && ros >= next_publish_) {
         if (gate_.can_publish(mono, ros)) {
           auto policy = result_flags_ & Flags::direct_output ? action_ : output_->map(action_, ramp_->activation_factor(ros / 1e9));
           publish(policy, mono, ros);

@@ -23,6 +23,7 @@ from .inference_schedule import InferenceSchedule
 from .marvin_policy_server import MarvinPolicyServer
 from .native_channel import NativeChannel
 from .native_diagnostics import NativeDiagnostics
+from .policy_gc_lifecycle import PolicyGcLifecycle
 from .native_protocol import Flags, Kind, Packet
 from .native_profile import validate_environment, validate_profile
 from .sensor_snapshot import SensorSnapshot
@@ -46,6 +47,7 @@ class FrameClock:
 
 class NativePolicyServer(MarvinPolicyServer):
     def __init__(self):
+        self._policy_gc = PolicyGcLifecycle()
         self._native_profile = os.environ.get('MARVIN_POLICY_NATIVE_PROFILE', 'test')
         validate_environment(os.environ.get('ROS_DOMAIN_ID'),
                              os.environ.get('ROS_LOCALHOST_ONLY'), self._native_profile)
@@ -185,7 +187,7 @@ class NativePolicyServer(MarvinPolicyServer):
             outcome.success, outcome.message = False, 'Native I/O is not ready'
             return outcome
         if not active and self._native_output_process_exited():
-            self._fail_native('Native output process exited', notify=False)
+            self._fail_native('Native output process exited', notify=False, output_stopped=True)
             outcome.success, outcome.message = True, 'Native output process exited; output released'
             return outcome
         if active and self._activation_mgr.state.active:
@@ -200,12 +202,18 @@ class NativePolicyServer(MarvinPolicyServer):
             outcome = super().request_activation(active)
             if not outcome.success:
                 return outcome
+            if active:
+                self._policy_gc.enter_output_window()
             previous_action = self.action.copy()
             ack = self._native_channel.control(Packet(Kind.ACTIVATE if active else Kind.DEACTIVATE))
             if not ack.flags & Flags.SUCCESS:
+                if active:
+                    # A rejected activation never grants native output.
+                    self._policy_gc.confirm_output_stopped()
                 raise ValueError('Native activation rejected: sensor inputs or preparation are not ready')
             self._observe_generation(ack.generation)
             if not active:
+                self._policy_gc.request_restore()
                 self.action = previous_action
                 if self._execution_gateway:
                     self._execution_preparation.generation = None
@@ -261,7 +269,7 @@ class NativePolicyServer(MarvinPolicyServer):
         if self._velocity_estimator is not None:
             self._velocity_estimator.reset()
 
-    def _fail_native(self, message, *, notify=True):
+    def _fail_native(self, message, *, notify=True, output_stopped=False):
         if self._native_fault != message:
             self._logger.error(f'Native policy output stopped: {message}. Explicit reactivation is required.')
             timing = getattr(self, '_native_request_timing', None)
@@ -272,6 +280,13 @@ class NativePolicyServer(MarvinPolicyServer):
         self._activation_mgr.state.active = False
         self._activation_mgr.state.deactivation_start_time = None
         self._activation_mgr.state.deactivation_start_action = None
+        if output_stopped:
+            self._policy_gc.confirm_output_stopped()
+        else:
+            # Sending a fault is not proof that the native output process has
+            # handled it. Keep GC suppressed until status or child exit proves
+            # that output stopped.
+            self._policy_gc.request_restore()
         if notify and self._native_channel is not None:
             try:
                 self._native_channel.send(Packet(Kind.FAULT))
@@ -294,10 +309,14 @@ class NativePolicyServer(MarvinPolicyServer):
                 self._native_status_flags = packet.flags
                 self._native_status_at = time.monotonic()
                 self._native_status_generation = packet.generation
+                self._policy_gc.observe_native_state(
+                    active=bool(packet.flags & Flags.ACTIVE),
+                    output_released=bool(packet.flags & Flags.OUTPUT_RELEASED))
                 if packet.flags & Flags.FAULTED:
                     reasons = {1: 'Inference deadline exceeded', 2: 'Invalid native result',
                                3: 'Python/native transport heartbeat expired'}
-                    self._fail_native(reasons.get(packet.trace_id, 'Native lifecycle fault'), notify=False)
+                    self._fail_native(reasons.get(packet.trace_id, 'Native lifecycle fault'),
+                                      notify=False, output_stopped=True)
                 if self._native_last_ros is not None and packet.ros_ns < self._native_last_ros:
                     if self._activation_mgr.is_active():
                         self._activation_mgr.state.activation_start_time = packet.ros_ns / 1e9
@@ -410,18 +429,26 @@ class NativePolicyServer(MarvinPolicyServer):
 
     def close_native(self):
         self._closing = True
-        if self._native_channel is not None:
-            self._native_channel.close()
-        if self._native_child is not None:
-            try:
-                self._native_child.wait(timeout=2.)
-            except subprocess.TimeoutExpired:
-                self._native_child.terminate()
+        child_stopped = self._native_child is None
+        try:
+            if self._native_channel is not None:
+                self._native_channel.close()
+            if self._native_child is not None:
                 try:
                     self._native_child.wait(timeout=2.)
+                    child_stopped = True
                 except subprocess.TimeoutExpired:
-                    self._native_child.kill()
-                    self._native_child.wait(timeout=2.)
+                    self._native_child.terminate()
+                    try:
+                        self._native_child.wait(timeout=2.)
+                        child_stopped = True
+                    except subprocess.TimeoutExpired:
+                        self._native_child.kill()
+                        self._native_child.wait(timeout=2.)
+                        child_stopped = True
+        finally:
+            if child_stopped:
+                self._policy_gc.confirm_output_stopped()
 
         diagnostics = getattr(self, '_native_diagnostics', None)
         if diagnostics is not None:

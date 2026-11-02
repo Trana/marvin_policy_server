@@ -24,6 +24,7 @@ def server_without_node():
     server._inference_schedule = SimpleNamespace(reset=Mock())
     server._velocity_estimator = SimpleNamespace(reset=Mock())
     server._latest_estimated_velocity = np.ones(3)
+    server._policy_gc = Mock()
     server.joint_names = [f'joint_{i}' for i in range(12)]
     server.action = np.ones(12)
     return server
@@ -62,6 +63,20 @@ def test_fault_logs_last_request_timing_once_without_changing_stop():
     assert len(messages) == 2
     assert messages[1].startswith('NATIVE_PYTHON_FAULT ')
     assert '"sequence":7' in messages[1]
+    assert server._policy_gc.request_restore.call_count == 2
+    server._policy_gc.confirm_output_stopped.assert_not_called()
+
+
+def test_confirmed_native_fault_restores_gc_without_waiting_for_another_status():
+    server = server_without_node()
+    server._logger = Mock()
+    server._native_fault = None
+    server._activation_mgr = SimpleNamespace(state=SimpleNamespace(active=True))
+
+    server._fail_native('Inference deadline exceeded', notify=False, output_stopped=True)
+
+    server._policy_gc.confirm_output_stopped.assert_called_once()
+    server._policy_gc.request_restore.assert_not_called()
 
 
 def test_history_commits_once_after_confirmed_publication(monkeypatch):
@@ -209,7 +224,8 @@ def test_stop_confirms_reaped_child_without_using_failed_transport():
     response = server._set_active_cb(SimpleNamespace(data=False), SimpleNamespace())
     assert response.success
     server._native_channel.control.assert_not_called()
-    server._fail_native.assert_called_once()
+    server._fail_native.assert_called_once_with(
+        'Native output process exited', notify=False, output_stopped=True)
 
 
 def test_preparation_failure_cannot_activate_native_output(monkeypatch):
@@ -235,6 +251,7 @@ def test_native_activation_occurs_only_after_parent_validation(monkeypatch):
         order.append('validated')
         response.success = True
         return response
+    server._policy_gc.enter_output_window.side_effect = lambda: order.append('gc-protected')
     def native(packet):
         order.append(packet.kind)
         return Packet(Kind.ACK, generation=4, flags=Flags.SUCCESS, ros_ns=10_000_000_000)
@@ -242,7 +259,7 @@ def test_native_activation_occurs_only_after_parent_validation(monkeypatch):
     server._native_channel = SimpleNamespace(control=native)
     response = server._set_active_cb(SimpleNamespace(data=True), SimpleNamespace())
     assert response.success
-    assert order == ['validated', Kind.ACTIVATE]
+    assert order == ['validated', 'gc-protected', Kind.ACTIVATE]
     assert server._activation_mgr.state.activation_start_time == 10.
 
 
@@ -261,4 +278,5 @@ def test_failed_native_activation_invalidates_local_active_state(monkeypatch):
     response = server._set_active_cb(SimpleNamespace(data=True), SimpleNamespace())
     assert not response.success
     assert not server._activation_mgr.state.active
+    server._policy_gc.confirm_output_stopped.assert_called_once()
     assert server._native_channel.send.call_args.args[0].kind == Kind.FAULT
