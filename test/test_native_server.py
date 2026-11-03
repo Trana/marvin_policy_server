@@ -67,6 +67,34 @@ def test_fault_logs_last_request_timing_once_without_changing_stop():
     server._policy_gc.confirm_output_stopped.assert_not_called()
 
 
+def test_callback_diagnostics_distinguish_elapsed_and_thread_cpu_time(monkeypatch):
+    import marvin_policy_server.native_server as module
+
+    server = server_without_node()
+    packet = Packet(Kind.SNAPSHOT, generation=3, requested_ns=1_000_000,
+                    values=(0.,) * 58)
+    server._closing = False
+    server._native_channel = SimpleNamespace(drain=lambda: [packet])
+    server._native_last_ros = None
+    server._native_fault = None
+    server._operator_permission = Mock()
+    server._activation_mgr = SimpleNamespace(is_active=lambda: True)
+    server._inference_max_age_ns = 100_000_000
+    server._timer_tick = lambda: setattr(server, '_pending_result', packet)
+    wall = iter([3_000_000, 93_000_000])
+    cpu = iter([5_000_000, 17_000_000])
+    monkeypatch.setattr(module.time, 'monotonic_ns', lambda: next(wall))
+    monkeypatch.setattr(module.time, 'thread_time_ns', lambda: next(cpu))
+
+    server._drain_native()
+
+    assert server._native_request_timing['request_to_callback_ms'] == 2
+    assert server._native_request_timing['callback_ms'] == 90
+    assert server._native_request_timing['callback_thread_cpu_ms'] == 12
+    assert server._pending_result is packet
+    assert server._frame is None
+
+
 def test_confirmed_native_fault_restores_gc_without_waiting_for_another_status():
     server = server_without_node()
     server._logger = Mock()
