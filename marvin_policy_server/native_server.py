@@ -338,10 +338,12 @@ class NativePolicyServer(MarvinPolicyServer):
                 if not self._activation_mgr.is_active() or self._native_fault:
                     continue
                 started_ns = time.monotonic_ns()
+                started_cpu_ns = time.thread_time_ns()
                 self._native_request_timing = {
                     'sequence': packet.sequence, 'generation': packet.generation,
                     'request_to_callback_ms': (started_ns - packet.requested_ns) / 1e6,
                     'callback_ms': None, 'request_to_result_send_ms': None,
+                    'callback_thread_cpu_ms': None,
                 }
                 if started_ns - packet.requested_ns > self._inference_max_age_ns:
                     raise RuntimeError('Native snapshot expired before Python inference')
@@ -353,6 +355,8 @@ class NativePolicyServer(MarvinPolicyServer):
                         raise RuntimeError('Policy computation produced no native result')
                 finally:
                     self._native_request_timing['callback_ms'] = (time.monotonic_ns() - started_ns) / 1e6
+                    self._native_request_timing['callback_thread_cpu_ms'] = (
+                        time.thread_time_ns() - started_cpu_ns) / 1e6
                     self._frame = None
         except Exception as exc:
             self._frame = None
