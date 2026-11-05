@@ -32,7 +32,7 @@ def metadata_contract(metadata):
     if metadata is None:
         return None
     result = deepcopy(metadata)
-    for key in ('created_at', 'policy_path', 'policy_sha256', 'artifact_sha256',
+    for key in ('created_at', 'task', 'policy_path', 'policy_sha256', 'artifact_sha256',
                 'checkpoint_name', 'checkpoint_path', 'checkpoint_sha256'):
         result.pop(key, None)
     # The store normalizes this reference when installing an exported bundle.

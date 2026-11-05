@@ -98,7 +98,8 @@ def test_combined_model_discards_warmup_history_and_rejects_metadata_drift(rig, 
     for index in range(2):
         torch.jit.trace(Combined(index), (torch.zeros(1, 7), torch.zeros(1, 2, 3))).save(str(source / 'policy.pt'))
         identity = {**metadata, 'policy_sha256': hashlib.sha256((source / 'policy.pt').read_bytes()).hexdigest(),
-                    'created_at': str(index), 'checkpoint_path': f'/training/model_{index}.pt'}
+                    'created_at': str(index), 'checkpoint_path': f'/training/model_{index}.pt',
+                    'task': 'training-task' if index == 0 else None}
         (source / 'metadata.json').write_text(json.dumps(identity))
         staging = tmp_path / f'prepared-combined-{index}'
         prepared = prepare({name: source / name for name in ('policy.pt', 'env.yaml', 'metadata.json')},

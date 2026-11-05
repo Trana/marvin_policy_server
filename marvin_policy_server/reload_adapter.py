@@ -16,7 +16,8 @@ class ReloadAdapter:
         self.manager = PolicyReload(self.load, self.install, self.released,
                                     lambda: node._policy_control.session_id)
         node.create_service(PositionDiagnostic, 'reload_policy', self.handle)
-        node.create_timer(.05, self.manager.poll)
+        # Management requests advance loading through handle(). Do not add a
+        # periodic Python callback to the policy executor while reload is idle.
         # Capture the startup contract, not a mutable environment file at reload time.
         self.spec = {
             'env_sha256': node._loaded_artifacts['env.yaml']['sha256'],
