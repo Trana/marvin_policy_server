@@ -13,6 +13,7 @@
   <depend>rclpy</depend>
   <depend>ament_index_python</depend>
   <exec_depend>description</exec_depend>
+  <exec_depend>runtime_manager</exec_depend>
   <depend>runtime_interfaces</depend>
   <depend>nav_msgs</depend>
   <depend>sensor_msgs</depend>

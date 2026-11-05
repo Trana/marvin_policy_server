@@ -686,6 +686,11 @@ class MarvinPolicyServer(PolicyNode):
             f"policy_input_dim={self._policy_input_dim}"
         )
 
+        self._reload_adapter = None
+        if self._native_io and self._execution_gateway and os.environ.get('MARVIN_POLICY_RELOAD_ENABLED') == '1':
+            from .reload_adapter import ReloadAdapter
+            self._reload_adapter = ReloadAdapter(self)
+
     def _next_trace_id(self) -> int:
         # trace_id layout: [8 bits source_id][16 bits instance_id][40 bits monotonic counter]
         self._trace_counter = (self._trace_counter + 1) & ((1 << 40) - 1)
@@ -793,6 +798,8 @@ class MarvinPolicyServer(PolicyNode):
     def prepare_execution(self, generation: str, initial_state_json: str) -> ExecutionOutcome:
         outcome = ExecutionOutcome()
         try:
+            if getattr(self, '_reload_adapter', None) and self._reload_adapter.manager.blocked:
+                raise ValueError('Policy reload pending or failed')
             if not self._execution_gateway:
                 raise ValueError('Policy is not configured for gateway output')
             ready, reason = self._base_lin_vel_readiness()
@@ -808,6 +815,9 @@ class MarvinPolicyServer(PolicyNode):
     def request_activation(self, active: bool) -> ExecutionOutcome:
         """Change activation and reset inference state on the existing executor thread."""
         outcome = ExecutionOutcome()
+        if active and getattr(self, '_reload_adapter', None) and self._reload_adapter.manager.blocked:
+            outcome.message = 'Policy reload pending or failed; load successfully before activation'
+            return outcome
         if active and getattr(self, '_execution_gateway', False):
             try:
                 self._execution_preparation.start()
@@ -901,6 +911,8 @@ class MarvinPolicyServer(PolicyNode):
         return response
 
     def _apply_policy_input_lock(self, input_name: str, locked: bool, values=None) -> tuple[bool, str]:
+        if getattr(self, '_reload_adapter', None) and self._reload_adapter.manager.blocked:
+            return False, 'Policy reload pending or failed; overrides are unavailable'
         result = self._apply_policy_input_lock_impl(input_name, locked, values)
         if result[0]:
             self._invalidate_async_inference()
@@ -2213,6 +2225,12 @@ class MarvinPolicyServer(PolicyNode):
             self._inference_schedule.complete(observation_ns, self.get_clock().now().nanoseconds)
     # Legacy methods (_compute_observation, _compute_action, forward, quat_to_rot_matrix)
     # are now handled by modular components but retained above as commented history.
+    def destroy_node(self):
+        adapter = getattr(self, '_reload_adapter', None)
+        if adapter is not None:
+            adapter.manager.close()
+        return super().destroy_node()
+
     def load_policy(self):
         """Load the neural network policy from the specified path."""
         # Load policy from file to io.BytesIO object
