@@ -437,6 +437,12 @@ class MarvinPolicyServer(PolicyNode):
         self._stale_warn_count = 0
         
         env_loader = EnvConfigLoader(self._env_path)
+        manifest = self._concurrent_policy_manifest
+        self._policy_cadence = env_loader.get_policy_cadence(manifest.training if manifest else None)
+        profile = env_loader.get_deployment_timing()
+        delay_max_ns = int(max(profile['inference_delay_ms']) * 1e6) if profile and self.get_parameter('use_sim_time').value else 0
+        self._policy_cadence.validate_backend(int(publish_period_ms * 1e6),
+            native=self._native_io, delay_max_ns=delay_max_ns)
         self.joint_names = env_loader.get_joint_names()
         self._execution_preparation = PolicyPreparation(self.joint_names)
         self._execution_candidate_publisher = (self.create_publisher(
@@ -445,7 +451,8 @@ class MarvinPolicyServer(PolicyNode):
         self.create_service(PrepareExecution, 'prepare_execution', self._prepare_execution)
         self.default_pos = env_loader.get_default_joint_positions()
         self._sim_release = simulation_gate(env_loader.get_deployment_timing(), self.default_pos,
-            use_sim_time=bool(self.get_parameter('use_sim_time').value), native_io=self._native_io)
+            use_sim_time=bool(self.get_parameter('use_sim_time').value), native_io=self._native_io,
+            expected_hz=self._policy_cadence.mean_hz)
         if self._sim_release is not None:
             # Timed fitted scenes publish specific force. Readiness validates the
             # scene contract before inference. Legacy and physical inputs retain
@@ -562,7 +569,7 @@ class MarvinPolicyServer(PolicyNode):
                 f"policy_path={self.policy_path}, env_path={self._env_path}"
             )
         decimation = 4  # Legacy runner fallback; node uses explicit deadline decisions.
-        self._inference_schedule = InferenceSchedule()  # 50 Hz, independent of publication
+        self._inference_schedule = InferenceSchedule(self._policy_cadence.periods_ns)
         if self._concurrent_policy_manifest is None:
             self._policy_runner = PolicyRunner(
                 self.policy,
@@ -1208,6 +1215,15 @@ class MarvinPolicyServer(PolicyNode):
         response.message = json.dumps(self._execution_state())
         return response
 
+    def _timing_status(self):
+        cadence = getattr(self, '_policy_cadence', None)
+        if cadence is None:
+            return None
+        return dict(schema='marvin.policy-timing.v1', cadence=cadence.projection(),
+            environment_sha256=self._loaded_artifacts['env.yaml']['sha256'], source=cadence.source,
+            scheduler='native-fixed' if self._native_io else 'python-cyclic',
+            observed=self._inference_schedule.observed())
+
     def _observation_status_payload(self) -> dict[str, object]:
         base_lin_vel_ready, base_lin_vel_message = self._base_lin_vel_readiness()
         command_live = self._current_lock_group_values("command")
@@ -1320,6 +1336,7 @@ class MarvinPolicyServer(PolicyNode):
             "policy_path": str(self.policy_path),
             "env_path": str(self._env_path),
             "loaded_artifacts": getattr(self, '_loaded_artifacts', None),
+            "timing": self._timing_status(),
             "base_lin_vel_source": {
                 "required": self._base_lin_vel_required,
                 "configured": self._base_lin_vel_source,

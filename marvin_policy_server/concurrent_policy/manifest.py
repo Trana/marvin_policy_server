@@ -23,6 +23,7 @@ class ConcurrentPolicyManifest:
     action_count: int
     path: Path
     loaded_artifact: dict | None = None
+    training: dict | None = None
 
 
 def load_concurrent_policy_manifest(
@@ -65,6 +66,7 @@ def load_concurrent_policy_manifest(
             action_count=int(dimensions['joint_action']),
             path=metadata_path,
             loaded_artifact=artifact_identity(metadata_path, content),
+            training=payload.get("training"),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(

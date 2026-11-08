@@ -29,7 +29,7 @@ def test_pending_inference_does_not_block_ticks_and_cannot_survive_stop():
     sensor=NS(header=NS(stamp=NS(sec=1,nanosec=0)))
     node._latest_joint_state=node._latest_imu=sensor
     node._timing=None
-    node._inference_schedule=InferenceSchedule()
+    node._inference_schedule=InferenceSchedule(20_000_000)
     node._activation_mgr=ActivationManager(ActivationConfig(0.,0.,True))
     node._operator_permission=OperatorPermission()
     node._async_pending_ns=node._async_fault=node._async_last_clock_ns=node._async_permission=None

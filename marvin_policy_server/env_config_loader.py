@@ -48,6 +48,10 @@ class EnvConfigLoader:
             self.loaded_artifact = artifact_identity(self._env_path, content)
         return self._data
 
+    def get_policy_cadence(self, training=None):
+        from .policy_cadence import PolicyCadence
+        return PolicyCadence.resolve(self._load(), training)
+
     def get_deployment_timing(self):
         return self._load().get('actions', {}).get('joint_pos', {}).get('deployment_timing')
 

@@ -133,3 +133,14 @@ def test_ambiguous_mutation_is_never_replayed():
         == "rejected"
     )
     assert len(calls) == 1
+
+
+def test_timing_is_forwarded_without_sharing_mutable_state():
+    timing = dict(schema='marvin.policy-timing.v1', cadence=dict(pattern_ticks=[4, 5]))
+    owner = PolicyControl(lambda: {
+        'policy_path': '/policy.pt', 'env_path': '/env.yaml',
+        'timing': timing, 'observations': [], 'locks': {},
+    }, lambda *args: None)
+    assert owner.state()['timing'] == timing
+    owner.state()['timing']['cadence']['pattern_ticks'].append(9)
+    assert timing['cadence']['pattern_ticks'] == [4, 5]

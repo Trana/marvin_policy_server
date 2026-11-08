@@ -37,7 +37,7 @@ def server():
     node._timing = None
     node._policy_runner = NS()
     node.action = np.zeros(2)
-    node._inference_schedule = InferenceSchedule()
+    node._inference_schedule = InferenceSchedule(20_000_000)
     node._publish_trace_event = lambda *a, **kw: None
     node._logger = NS(error=lambda message: None)
     node._async_worker = NS(invalidate=lambda: None, poll=lambda: None)

@@ -66,6 +66,7 @@ class PolicyControl:
             "policy_path": observation["policy_path"],
             "env_path": observation["env_path"],
             "loaded_artifacts": deepcopy(observation.get("loaded_artifacts")),
+            "timing": deepcopy(observation.get("timing")),
             "observations": observation["observations"],
             "controls": controls,
         }

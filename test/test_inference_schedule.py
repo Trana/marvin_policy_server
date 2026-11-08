@@ -4,7 +4,7 @@ from marvin_policy_server.inference_schedule import InferenceSchedule
 
 
 def test_normal_and_delayed_callbacks_preserve_deadlines():
-    schedule = InferenceSchedule()
+    schedule = InferenceSchedule(20_000_000)
     assert schedule.due(0)
     schedule.complete(0, 6_000_000)
     assert not schedule.due(10_000_000)
@@ -17,7 +17,7 @@ def test_normal_and_delayed_callbacks_preserve_deadlines():
 
 
 def test_long_work_skips_expired_deadlines_without_burst():
-    schedule = InferenceSchedule()
+    schedule = InferenceSchedule(20_000_000)
     assert schedule.due(0)
     schedule.complete(0, 65_000_000)
     assert schedule.deadline_ns == 80_000_000
@@ -29,7 +29,7 @@ def test_long_work_skips_expired_deadlines_without_burst():
 
 
 def test_paused_sim_clock_reset_and_reactivation():
-    schedule = InferenceSchedule()
+    schedule = InferenceSchedule(20_000_000)
     assert schedule.due(100_000_000)
     assert schedule.observation_dt(100_000_000) == .02
     schedule.complete(100_000_000, 100_000_000)
@@ -43,7 +43,7 @@ def test_paused_sim_clock_reset_and_reactivation():
 
 
 def test_forward_jump_and_clock_reset_during_inference():
-    schedule = InferenceSchedule()
+    schedule = InferenceSchedule(20_000_000)
     assert schedule.due(0)
     schedule.complete(0, 1)
     assert schedule.due(10_000_000_000)
@@ -79,7 +79,7 @@ def test_real_ros_simulated_clock_pause_and_rewind(monkeypatch):
     publisher = node.create_publisher(Clock, '/clock', 10)
     executor = SingleThreadedExecutor(context=context)
     executor.add_node(node)
-    schedule = InferenceSchedule()
+    schedule = InferenceSchedule(20_000_000)
 
     def set_time(ns):
         message = Clock()
@@ -146,7 +146,7 @@ def test_node_tick_uses_deadlines_and_preserves_stale_input_guard(permission):
     server._operator_permission = OperatorPermission(required=True, clock=lambda: 0.)
     server._operator_permission.update(permission)
     server._timing = None
-    server._inference_schedule = InferenceSchedule()
+    server._inference_schedule = InferenceSchedule(20_000_000)
     server.get_clock = lambda: NS(now=lambda: NS(nanoseconds=now[0]))
     sensor = NS(header=NS(stamp=NS(sec=1, nanosec=0)))
     server._latest_joint_state = server._latest_imu = sensor

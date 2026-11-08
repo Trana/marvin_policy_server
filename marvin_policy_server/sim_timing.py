@@ -6,7 +6,8 @@ import numpy as np
 
 
 class SimActionRelease:
-    def __init__(self, profile, initial, seed=42):
+    def __init__(self, profile, initial, seed=42, *, expected_hz=50.):
+        self.expected_hz = expected_hz
         if profile.get('revision') != 'marvin-timing-v1' or profile.get('physics_dt') != .005:
             raise ValueError('Unsupported simulation timing profile')
         bounds = profile['inference_delay_ms']
@@ -96,16 +97,16 @@ class SimActionRelease:
         if len(stamps) < 101 or stamps[-1] <= stamps[0]:
             return None
         hz = (len(stamps) - 1) * 1e9 / (stamps[-1] - stamps[0])
-        if hz >= 48 or (self.last_cadence_warning is not None and
+        if hz >= self.expected_hz * .96 or (self.last_cadence_warning is not None and
                         now - self.last_cadence_warning < 5_000_000_000):
             return None
         self.last_cadence_warning = now
-        return f'Simulation policy cadence is {hz:.1f} Hz; expected 50 Hz per simulated second'
+        return f'Simulation policy cadence is {hz:.1f} Hz; expected {self.expected_hz:.2f} Hz per simulated second'
 
 
-def simulation_gate(profile, initial, *, use_sim_time, native_io):
+def simulation_gate(profile, initial, *, use_sim_time, native_io, expected_hz=50.):
     if not profile or not use_sim_time:
         return None
     if native_io:
         raise ValueError('Timed simulation requires the Python policy gateway backend')
-    return SimActionRelease(profile, initial)
+    return SimActionRelease(profile, initial, expected_hz=expected_hz)

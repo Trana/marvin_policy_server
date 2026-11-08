@@ -76,7 +76,7 @@ class NativePolicyServer(MarvinPolicyServer):
             binary = Path(str(self.get_parameter('native_io_executable').value))
             if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
                 raise ValueError('native_io_executable must name an existing absolute executable path')
-            self._inference_schedule = SnapshotSchedule()
+            self._inference_schedule = SnapshotSchedule(self._policy_cadence.periods_ns)
             self._expected_tick_ns = 20_000_000
             # This subscription must not overwrite permission attached to a snapshot.
             self.destroy_subscription(self._operator_permission_subscription)
