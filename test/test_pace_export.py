@@ -1,31 +1,39 @@
 """Offline PACE data validation; no robot, ROS, or motion access."""
-import importlib.util
+
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
-spec = importlib.util.spec_from_file_location('pace_export', Path(__file__).parents[1] / 'scripts/export_pace_capture.py')
+spec = importlib.util.spec_from_file_location(
+    'pace_export', Path(__file__).parents[1] / 'scripts/export_pace_capture.py'
+)
 export = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(export)
 
 
 def fixture():
-    commands = [(100, [1., 2.]), (200, [3., 4.]), (300, [5., 6.])]
-    feedback = [(100, ['b', 'a'], [20., 10.]), (200, ['b', 'a'], [40., 30.]),
-                (300, ['b', 'a'], [60., 50.])]
+    commands = [(100, [1.0, 2.0]), (200, [3.0, 4.0]), (300, [5.0, 6.0])]
+    feedback = [
+        (100, ['b', 'a'], [20.0, 10.0]),
+        (200, ['b', 'a'], [40.0, 30.0]),
+        (300, ['b', 'a'], [60.0, 50.0]),
+    ]
     return commands, feedback
 
 
 def test_hold_interpolation_and_joint_order():
     result = export.resample(*fixture(), ['a', 'b'], 100, 300, 50, 100)
-    assert result['des_dof_pos'] == [[1., 2.], [1., 2.], [3., 4.], [3., 4.]]
-    assert result['dof_pos'] == [[10., 20.], [20., 30.], [30., 40.], [40., 50.]]
-    assert result['time'] == [0., 50e-9, 100e-9, 150e-9]
+    assert result['des_dof_pos'] == [[1.0, 2.0], [1.0, 2.0], [3.0, 4.0], [3.0, 4.0]]
+    assert result['dof_pos'] == [[10.0, 20.0], [20.0, 30.0], [30.0, 40.0], [40.0, 50.0]]
+    assert result['time'] == [0.0, 50e-9, 100e-9, 150e-9]
 
 
-@pytest.mark.parametrize('fault', ['missing', 'duplicate', 'regression', 'nan', 'shape', 'mapping'])
+@pytest.mark.parametrize(
+    'fault', ['missing', 'duplicate', 'regression', 'nan', 'shape', 'mapping']
+)
 def test_reject_bad_stream(fault):
     commands, feedback = fixture()
     if fault == 'missing':
@@ -44,8 +52,16 @@ def test_reject_bad_stream(fault):
         export.resample(commands, feedback, ['a', 'b'], 100, 300, 50, 100)
 
 
-@pytest.mark.parametrize('start,end,dt,gap', [(90, 300, 50, 100), (100, 301, 50, 100),
-    (100, 300, 50, 99), (100, 300, 0, 100), (100, 300, 500, 100)])
+@pytest.mark.parametrize(
+    'start,end,dt,gap',
+    [
+        (90, 300, 50, 100),
+        (100, 301, 50, 100),
+        (100, 300, 50, 99),
+        (100, 300, 0, 100),
+        (100, 300, 500, 100),
+    ],
+)
 def test_reject_bad_window(start, end, dt, gap):
     with pytest.raises(ValueError):
         export.resample(*fixture(), ['a', 'b'], start, end, dt, gap)
@@ -53,8 +69,10 @@ def test_reject_bad_window(start, end, dt, gap):
 
 def make_receipt(root):
     (root / 'data').write_bytes(b'recorded')
-    receipt = {'schema': 'reference-complete.v1', 'files': {
-        'data': {'sha256': hashlib.sha256(b'recorded').hexdigest(), 'size': 8}}}
+    receipt = {
+        'schema': 'reference-complete.v1',
+        'files': {'data': {'sha256': hashlib.sha256(b'recorded').hexdigest(), 'size': 8}},
+    }
     (root / 'complete.json').write_text(json.dumps(receipt))
     return receipt
 

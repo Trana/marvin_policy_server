@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import numpy as np
 import time
 
+import numpy as np
 import torch
 
 from .history import EstimatorFeatureHistory
@@ -14,9 +14,7 @@ from .manifest import ConcurrentPolicyManifest
 class ConcurrentPolicyRunner:
     """Run a combined artifact at the configured control decimation."""
 
-    def __init__(
-        self, policy, manifest: ConcurrentPolicyManifest, *, decimation: int
-    ):
+    def __init__(self, policy, manifest: ConcurrentPolicyManifest, *, decimation: int):
         """Initialize action state and estimator history."""
         if decimation <= 0:
             raise ValueError('decimation must be positive')
@@ -24,16 +22,12 @@ class ConcurrentPolicyRunner:
         self.manifest = manifest
         self.decimation = int(decimation)
         self.counter = 0
-        self.current_action = np.zeros(
-            manifest.action_count, dtype=np.float64
-        )
+        self.current_action = np.zeros(manifest.action_count, dtype=np.float64)
         self.latest_estimated_state: np.ndarray | None = None
         self.latest_effective_velocity: np.ndarray | None = None
         self.latest_foot_positions: np.ndarray | None = None
         self.latest_result_monotonic: float | None = None
-        self.history = EstimatorFeatureHistory(
-            manifest.history_length, manifest.raw_feature_count
-        )
+        self.history = EstimatorFeatureHistory(manifest.history_length, manifest.raw_feature_count)
         if self.supports_velocity_override and not hasattr(policy, 'inference_snapshot'):
             # Legacy combined artifacts expose the two modules separately.
             # Compile that route before activation, without retaining warmup data.
@@ -41,7 +35,9 @@ class ConcurrentPolicyRunner:
                 observation = torch.zeros(1, manifest.base_observation_count)
                 history = torch.zeros(1, manifest.history_length, manifest.raw_feature_count)
                 for _ in range(20):
-                    self._infer_with_estimate_overrides(observation, history, None, None, None, None)
+                    self._infer_with_estimate_overrides(
+                        observation, history, None, None, None, None
+                    )
             self.reset()
 
     @property
@@ -79,10 +75,7 @@ class ConcurrentPolicyRunner:
             return live
         override = np.asarray(values, dtype=np.float32).reshape(-1)
         if override.shape != (width,):
-            raise ValueError(
-                f'{name} override has shape {override.shape}, expected '
-                f'{(width,)}'
-            )
+            raise ValueError(f'{name} override has shape {override.shape}, expected {(width,)}')
         if not np.isfinite(override).all():
             raise ValueError(f'{name} override contains non-finite values')
         return torch.as_tensor(
@@ -105,15 +98,13 @@ class ConcurrentPolicyRunner:
                 'Concurrent artifact does not expose estimator/actor modules '
                 'required for estimator-output overrides'
             )
-        velocity, foot_height, contact, foot_positions = (
-            self.policy.estimator.actor_estimates(history)
+        velocity, foot_height, contact, foot_positions = self.policy.estimator.actor_estimates(
+            history
         )
-        self.latest_foot_positions = foot_positions.detach().reshape(
-            -1
-        ).cpu().numpy().astype(np.float64, copy=True)
-        effective_velocity = self._override_tensor(
-            velocity_override, velocity, 3, 'velocity'
+        self.latest_foot_positions = (
+            foot_positions.detach().reshape(-1).cpu().numpy().astype(np.float64, copy=True)
         )
+        effective_velocity = self._override_tensor(velocity_override, velocity, 3, 'velocity')
         effective_foot_positions = self._override_tensor(
             foot_positions_override,
             foot_positions,
@@ -123,9 +114,7 @@ class ConcurrentPolicyRunner:
         effective_foot_height = self._override_tensor(
             foot_height_override, foot_height, 4, 'foot height'
         )
-        effective_contact = self._override_tensor(
-            contact_override, contact, 4, 'contact'
-        )
+        effective_contact = self._override_tensor(contact_override, contact, 4, 'contact')
         actor_observation = observation.clone()
         actor_observation[..., :3] = effective_velocity
         actor_observation = torch.cat(
@@ -157,8 +146,7 @@ class ConcurrentPolicyRunner:
         if should_infer:
             if observation is None or raw_features is None:
                 raise ValueError(
-                    'Concurrent observation and estimator features are '
-                    'required on inference ticks'
+                    'Concurrent observation and estimator features are required on inference ticks'
                 )
             observation = np.asarray(observation, dtype=np.float32).reshape(-1)
             if observation.shape != (self.manifest.base_observation_count,):
@@ -181,8 +169,12 @@ class ConcurrentPolicyRunner:
                     )
                 )
                 if not has_override and hasattr(self.policy, 'inference_snapshot'):
-                    action, state, feet = self.policy.inference_snapshot(observation_tensor, history_tensor)
-                    self.latest_foot_positions = feet.detach().reshape(-1).cpu().numpy().astype(np.float64, copy=True)
+                    action, state, feet = self.policy.inference_snapshot(
+                        observation_tensor, history_tensor
+                    )
+                    self.latest_foot_positions = (
+                        feet.detach().reshape(-1).cpu().numpy().astype(np.float64, copy=True)
+                    )
                     output = (action, state)
                 else:
                     output = (
@@ -199,45 +191,29 @@ class ConcurrentPolicyRunner:
                     )
                 if not isinstance(output, tuple) or len(output) != 2:
                     raise ValueError(
-                        'Concurrent policy must return '
-                        '(joint_action, estimated_state)'
+                        'Concurrent policy must return (joint_action, estimated_state)'
                     )
                 action, estimated_state = output
             action_values = action.detach().reshape(-1).cpu().numpy()
             if self.latest_foot_positions is not None and (
-                self.latest_foot_positions.shape != (12,) or not np.isfinite(self.latest_foot_positions).all()
+                self.latest_foot_positions.shape != (12,)
+                or not np.isfinite(self.latest_foot_positions).all()
             ):
                 raise ValueError('Concurrent policy returned invalid foot positions')
             state_values = estimated_state.detach().reshape(-1).cpu().numpy()
             if action_values.shape != (self.manifest.action_count,):
-                raise ValueError(
-                    'Concurrent policy returned an invalid joint-action width'
-                )
+                raise ValueError('Concurrent policy returned an invalid joint-action width')
             if state_values.shape != (self.manifest.estimated_state_count,):
-                raise ValueError(
-                    'Concurrent policy returned an invalid estimated-state '
-                    'width'
-                )
-            if (
-                not np.isfinite(action_values).all()
-                or not np.isfinite(state_values).all()
-            ):
-                raise ValueError(
-                    'Concurrent policy returned non-finite output'
-                )
-            self.current_action = action_values.astype(
-                np.float64, copy=True
-            )
-            self.latest_estimated_state = state_values.astype(
-                np.float64, copy=True
-            )
+                raise ValueError('Concurrent policy returned an invalid estimated-state width')
+            if not np.isfinite(action_values).all() or not np.isfinite(state_values).all():
+                raise ValueError('Concurrent policy returned non-finite output')
+            self.current_action = action_values.astype(np.float64, copy=True)
+            self.latest_estimated_state = state_values.astype(np.float64, copy=True)
             self.latest_result_monotonic = time.monotonic()
             self.latest_effective_velocity = (
                 state_values[:3].astype(np.float64, copy=True)
                 if estimated_velocity_override is None
-                else np.asarray(
-                    estimated_velocity_override, dtype=np.float64
-                ).reshape(3).copy()
+                else np.asarray(estimated_velocity_override, dtype=np.float64).reshape(3).copy()
             )
         self.counter += 1
         return self.current_action

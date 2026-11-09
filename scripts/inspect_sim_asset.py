@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Report current composed USD masses and layer hashes without running physics."""
+
 import argparse
 import hashlib
 import json
@@ -7,7 +8,9 @@ from pathlib import Path
 
 
 def inspect(path):
-    from pxr import Usd, UsdGeom, UsdPhysics
+    from pxr import Usd
+    from pxr import UsdGeom
+    from pxr import UsdPhysics
 
     path = Path(path).resolve(strict=True)
     stage = Usd.Stage.Open(str(path))
@@ -27,8 +30,9 @@ def inspect(path):
         with source.open('rb') as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                 digest.update(chunk)
-        layers.append(dict(path=str(source), sha256=digest.hexdigest(),
-                           bytes=source.stat().st_size))
+        layers.append(
+            {'path': str(source), 'sha256': digest.hexdigest(), 'bytes': source.stat().st_size}
+        )
     kg_per_unit = UsdPhysics.GetStageKilogramsPerUnit(stage)
     bodies = []
     for prim in Usd.PrimRange(stage.GetPseudoRoot(), Usd.TraverseInstanceProxies()):
@@ -38,21 +42,30 @@ def inspect(path):
         attr = api.GetMassAttr()
         value = attr.Get()
         explicit = attr.HasAuthoredValueOpinion() and value is not None and value > 0
-        bodies.append(dict(path=str(prim.GetPath()),
-                           enabled=UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get(),
-                           explicit_mass_kg=float(value * kg_per_unit) if explicit else None))
+        bodies.append({
+            'path': str(prim.GetPath()),
+            'enabled': UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Get(),
+            'explicit_mass_kg': float(value * kg_per_unit) if explicit else None,
+        })
     missing = [body['path'] for body in bodies if body['explicit_mass_kg'] is None]
-    return dict(schema='sim-asset-inspection.v1', root=str(path), layers=layers,
-                meters_per_unit=UsdGeom.GetStageMetersPerUnit(stage),
-                kilograms_per_unit=kg_per_unit, bodies=bodies,
-                explicit_mass_sum_kg=sum(body['explicit_mass_kg'] or 0 for body in bodies),
-                bodies_without_explicit_mass=missing,
-                limits='Current default-variant USD composition, not historical training evidence. '
-                       'Mass sum includes disabled rigid bodies and excludes inferred density mass. '
-                       'No PhysX runtime, randomization or importer overrides are evaluated. '
-                       'Layer hashes do not include external mesh/texture files or snapshot their bytes. '
-                       'Review USD warnings for unresolved composition dependencies. '
-                       'Keep source files unchanged during inspection.')
+    return {
+        'schema': 'sim-asset-inspection.v1',
+        'root': str(path),
+        'layers': layers,
+        'meters_per_unit': UsdGeom.GetStageMetersPerUnit(stage),
+        'kilograms_per_unit': kg_per_unit,
+        'bodies': bodies,
+        'explicit_mass_sum_kg': sum(body['explicit_mass_kg'] or 0 for body in bodies),
+        'bodies_without_explicit_mass': missing,
+        'limits': (
+            'Current default-variant USD composition, not historical training evidence. '
+            'Mass sum includes disabled rigid bodies and excludes inferred density mass. '
+            'No PhysX runtime, randomization or importer overrides are evaluated. '
+            'Layer hashes do not include external mesh/texture files or snapshot their bytes. '
+            'Review USD warnings for unresolved composition dependencies. '
+            'Keep source files unchanged during inspection.'
+        ),
+    }
 
 
 if __name__ == '__main__':

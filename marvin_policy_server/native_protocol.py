@@ -1,4 +1,5 @@
-"""Versioned local transport envelope. No ROS, model or network dependency.
+"""
+Versioned local transport envelope. No ROS, model or network dependency.
 
 Use only an inherited AF_UNIX SOCK_SEQPACKET socket. Each send is one complete
 packet. Lifecycle code must separately validate ownership, sequence and expiry.
@@ -6,11 +7,11 @@ The header and floating-point payload use little-endian wire order.
 """
 
 from dataclasses import dataclass
-from enum import IntEnum, IntFlag
+from enum import IntEnum
+from enum import IntFlag
 import math
 import socket
 import struct
-
 
 MAGIC = 0x4F49504D  # MPIO
 VERSION = 2
@@ -67,8 +68,16 @@ class Packet:
         kind = Kind(self.kind)
         if type(self.flags) is not int and not isinstance(self.flags, Flags):
             raise ValueError('Packet flags require an integer bit mask')
-        integers = (self.sequence, self.generation, self.requested_ns, self.ros_ns,
-                    self.joint_ns, self.imu_ns, int(self.flags), self.trace_id)
+        integers = (
+            self.sequence,
+            self.generation,
+            self.requested_ns,
+            self.ros_ns,
+            self.joint_ns,
+            self.imu_ns,
+            int(self.flags),
+            self.trace_id,
+        )
         if any(type(v) is not int or not 0 <= v < 2**64 for v in integers):
             raise ValueError('Packet header requires unsigned 64-bit integers')
         values = tuple(float(v) for v in self.values)
@@ -77,8 +86,11 @@ class Packet:
         token = self.token.encode('utf-8')
         if len(token) > MAX_TOKEN_BYTES or (token and kind != Kind.PREPARE):
             raise ValueError('Invalid preparation token')
-        return HEADER.pack(MAGIC, VERSION, int(kind), len(values), len(token), *integers) + \
-            struct.pack(f'<{len(values)}d', *values) + token
+        return (
+            HEADER.pack(MAGIC, VERSION, int(kind), len(values), len(token), *integers)
+            + struct.pack(f'<{len(values)}d', *values)
+            + token
+        )
 
     @classmethod
     def decode(cls, data):
@@ -87,7 +99,11 @@ class Packet:
         magic, version, kind, count, token_size, *integers = HEADER.unpack_from(data)
         if magic != MAGIC or version != VERSION:
             raise ValueError('Unsupported native policy protocol')
-        if count > MAX_VALUES or token_size > MAX_TOKEN_BYTES or len(data) != HEADER.size + count * 8 + token_size:
+        if (
+            count > MAX_VALUES
+            or token_size > MAX_TOKEN_BYTES
+            or len(data) != HEADER.size + count * 8 + token_size
+        ):
             raise ValueError('Packet payload length mismatch')
         values = struct.unpack_from(f'<{count}d', data, HEADER.size)
         if not all(math.isfinite(v) for v in values):
@@ -99,8 +115,10 @@ class Packet:
 
 
 def validate_socket(connection):
-    if connection.family != socket.AF_UNIX or \
-            connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET:
+    if (
+        connection.family != socket.AF_UNIX
+        or connection.getsockopt(socket.SOL_SOCKET, socket.SO_TYPE) != socket.SOCK_SEQPACKET
+    ):
         raise ValueError('Native policy transport requires a local sequence-packet socket')
 
 

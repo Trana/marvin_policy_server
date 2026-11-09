@@ -12,9 +12,7 @@ class EstimatorFeatureHistory:
         """Allocate an initially empty history."""
         self.history_length = int(history_length)
         self.feature_count = int(feature_count)
-        self.values = np.zeros(
-            (self.history_length, self.feature_count), dtype=np.float32
-        )
+        self.values = np.zeros((self.history_length, self.feature_count), dtype=np.float32)
         self.count = 0
 
     @property
@@ -30,10 +28,7 @@ class EstimatorFeatureHistory:
     def push(self, features: np.ndarray) -> np.ndarray:
         """Append one frame, repeating the first across empty slots."""
         frame = np.asarray(features, dtype=np.float32).reshape(-1)
-        if (
-            frame.shape != (self.feature_count,)
-            or not np.isfinite(frame).all()
-        ):
+        if frame.shape != (self.feature_count,) or not np.isfinite(frame).all():
             raise ValueError(
                 f'Expected {self.feature_count} finite concurrent-estimator '
                 f'features, got {frame.shape}'

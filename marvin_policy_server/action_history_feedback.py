@@ -2,10 +2,7 @@
 
 import numpy as np
 
-
-VALID_ACTION_HISTORY_FEEDBACK_MODES = frozenset(
-    {'raw', 'zero', 'applied'}
-)
+VALID_ACTION_HISTORY_FEEDBACK_MODES = frozenset({'raw', 'zero', 'applied'})
 
 
 def action_history_feedback(
@@ -21,15 +18,11 @@ def action_history_feedback(
     default = np.asarray(default_position, dtype=np.float64)
     if raw.shape != target.shape or raw.shape != default.shape:
         raise ValueError(
-            'raw action, policy target, and default position must have '
-            'matching shapes'
+            'raw action, policy target, and default position must have matching shapes'
         )
     if mode not in VALID_ACTION_HISTORY_FEEDBACK_MODES:
         choices = ', '.join(sorted(VALID_ACTION_HISTORY_FEEDBACK_MODES))
-        raise ValueError(
-            f'action history feedback mode must be one of: {choices}; '
-            f'got {mode!r}'
-        )
+        raise ValueError(f'action history feedback mode must be one of: {choices}; got {mode!r}')
     if mode == 'raw':
         return raw.copy()
     if mode == 'zero':

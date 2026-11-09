@@ -1,16 +1,21 @@
 """Real USD integration test. Also runnable with Isaac's bundled Python."""
+
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
 
 try:
-    from pxr import Usd, UsdGeom, UsdPhysics, Sdf
+    from pxr import Sdf
+    from pxr import Usd
+    from pxr import UsdGeom
+    from pxr import UsdPhysics
 except ImportError:
     Usd = None
 
 spec = importlib.util.spec_from_file_location(
-    'probe', Path(__file__).parents[1] / 'scripts/prepare_sim_delay_probe.py')
+    'probe', Path(__file__).parents[1] / 'scripts/prepare_sim_delay_probe.py'
+)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 
@@ -23,29 +28,40 @@ class StageMetadataTest(unittest.TestCase):
             output = Path(temporary) / 'probe.usda'
             stage = Usd.Stage.CreateNew(str(source))
             stage.SetDefaultPrim(stage.DefinePrim('/World'))
-            UsdGeom.SetStageMetersPerUnit(stage, 1.)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
             UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdPhysics.SetStageKilogramsPerUnit(stage, 2.)
-            stage.SetTimeCodesPerSecond(60.)
-            stage.SetFramesPerSecond(30.)
-            stage.SetStartTimeCode(5.)
-            stage.SetEndTimeCode(300.)
+            UsdPhysics.SetStageKilogramsPerUnit(stage, 2.0)
+            stage.SetTimeCodesPerSecond(60.0)
+            stage.SetFramesPerSecond(30.0)
+            stage.SetStartTimeCode(5.0)
+            stage.SetEndTimeCode(300.0)
             stage.GetRootLayer().customLayerData = {'fixture': 'preserve'}
-            script = ('import collections\ndef setup(db):\n    pass\n'
-                      'def compute(db):\n    delay_steps = 6\n'
-                      '    if True:\n        print(len(db.internal_state.buffer))\n')
+            script = (
+                'import collections\ndef setup(db):\n    pass\n'
+                'def compute(db):\n    delay_steps = 6\n'
+                '    if True:\n        print(len(db.internal_state.buffer))\n'
+            )
             stage.DefinePrim(probe.NODE).CreateAttribute(
-                'inputs:script', Sdf.ValueTypeNames.String).Set(script)
+                'inputs:script', Sdf.ValueTypeNames.String
+            ).Set(script)
             clock = Sdf.Path(probe.SIM_TIME)
             stage.DefinePrim(clock.GetPrimPath()).CreateAttribute(
-                clock.name, Sdf.ValueTypeNames.Double).Set(0.)
+                clock.name, Sdf.ValueTypeNames.Double
+            ).Set(0.0)
             stage.GetRootLayer().Save()
             before = source.read_bytes()
             probe.prepare(source, output)
             diagnostic = Usd.Stage.Open(str(output))
-            for key in ('metersPerUnit', 'kilogramsPerUnit', 'upAxis',
-                        'timeCodesPerSecond', 'framesPerSecond', 'startTimeCode',
-                        'endTimeCode', 'defaultPrim'):
+            for key in (
+                'metersPerUnit',
+                'kilogramsPerUnit',
+                'upAxis',
+                'timeCodesPerSecond',
+                'framesPerSecond',
+                'startTimeCode',
+                'endTimeCode',
+                'defaultPrim',
+            ):
                 self.assertEqual(diagnostic.GetMetadata(key), stage.GetMetadata(key), key)
             self.assertEqual(diagnostic.GetDefaultPrim().GetPath(), '/World')
             self.assertEqual(diagnostic.GetRootLayer().customLayerData['fixture'], 'preserve')

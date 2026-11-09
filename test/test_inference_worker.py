@@ -10,17 +10,19 @@ def wait_for(predicate):
         value = predicate()
         if value:
             return value
-        time.sleep(.001)
+        time.sleep(0.001)
     raise AssertionError('Worker did not complete')
 
 
 def test_no_queue_and_reset_discards_result_before_reactivation():
     entered, release = Event(), Event()
     resets = []
+
     def compute(value):
         entered.set()
         assert release.wait(2)
         return value * 2
+
     worker = InferenceWorker(compute, lambda: resets.append(1))
     try:
         assert worker.submit(1, 'old')
@@ -44,6 +46,7 @@ def test_no_queue_and_reset_discards_result_before_reactivation():
 def test_exceptions_are_results_and_shutdown_rejects_submissions():
     def compute(value):
         raise ValueError('invalid output')
+
     worker = InferenceWorker(compute, lambda: None)
     assert worker.submit(None, 1)
     result = wait_for(worker.poll)

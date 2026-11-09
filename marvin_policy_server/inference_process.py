@@ -24,8 +24,10 @@ def _serve(connection, factory, spec):
                 value = task(payload)
             except Exception as exc:
                 error = RuntimeError(f'{type(exc).__name__}: {exc}')
-            connection.send(('result', InferenceResult(
-                current, context, value, error, submitted, time.monotonic_ns())))
+            connection.send((
+                'result',
+                InferenceResult(current, context, value, error, submitted, time.monotonic_ns()),
+            ))
     except (EOFError, BrokenPipeError, KeyboardInterrupt):
         pass
     except Exception as exc:
@@ -37,11 +39,12 @@ def _serve(connection, factory, spec):
 class InferenceProcess:
     """Same lifecycle as InferenceWorker, without the shared Python GIL."""
 
-    def __init__(self, factory, spec, *, startup_timeout=30.):
+    def __init__(self, factory, spec, *, startup_timeout=30.0):
         context = multiprocessing.get_context('spawn')
         self._connection, child = context.Pipe()
-        self._process = context.Process(target=_serve, args=(child, factory, spec),
-                                        name='policy-inference', daemon=True)
+        self._process = context.Process(
+            target=_serve, args=(child, factory, spec), name='policy-inference', daemon=True
+        )
         self._generation = 0
         self._busy = self._closed = False
         self._process.start()
@@ -83,7 +86,7 @@ class InferenceProcess:
             raise RuntimeError(f'Inference process failed: {result}')
         return result if result.generation == self._generation else None
 
-    def close(self, timeout=1.):
+    def close(self, timeout=1.0):
         if self._closed:
             return not self._process.is_alive()
         self._closed = True

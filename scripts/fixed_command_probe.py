@@ -1,14 +1,15 @@
-"""Instrument the fixed-base script in a diagnostic layer, never the source USD.
+"""
+Instrument the fixed-base script in a diagnostic layer, never the source USD.
 
 Records script acceptance and target-setter return, not physical
 actuation. Diagnostic failures must not suppress original target calls.
 """
 
-SETTER = '''dc.set_dof_position_target(
+SETTER = """dc.set_dof_position_target(
                     db.per_instance_state.dofs[name], float(position)
-                )'''
+                )"""
 
-HELPERS = r'''
+HELPERS = r"""
 
 import time as _target_probe_time
 import json as _target_probe_json
@@ -80,7 +81,8 @@ def _target_probe_set(db, dc, handle, target, name):
                     setter_return_wall_ns=_target_probe_time.time_ns(),
                     callback_sequence=state._target_probe_sequence,
                     joint=name, target_rad=target,
-                    setter_result=(result if isinstance(result, (bool, int, float, str, type(None)))
+                    setter_result=(result if isinstance(
+                        result, (bool, int, float, str, type(None)))
                                    else repr(result)),
                     shadow_matches=bool(values.get(name) == target)))
                 if len(state._target_probe_rows) >= 100:
@@ -97,12 +99,15 @@ def cleanup(db):
         _target_probe_error(db, 'cleanup', error)
     if _target_probe_original_cleanup is not None:
         return _target_probe_original_cleanup(db)
-'''
+"""
 
 
 def instrument(source, joint='FL_calf_joint'):
-    allowed = {f'{leg}_{part}_joint' for leg in ('FL', 'FR', 'RL', 'RR')
-               for part in ('hip', 'thigh', 'calf')}
+    allowed = {
+        f'{leg}_{part}_joint'
+        for leg in ('FL', 'FR', 'RL', 'RR')
+        for part in ('hip', 'thigh', 'calf')
+    }
     if joint not in allowed:
         raise ValueError('Probe joint must name one of the 12 motor joints')
     append = '        db.per_instance_state.buffer.append((names, positions))'
@@ -114,7 +119,10 @@ def instrument(source, joint='FL_calf_joint'):
         raise ValueError('Source is already instrumented')
     code = source.replace(append, '        _target_probe_accept(db, names, positions)\n' + append)
     code = code.replace(reset, reset + '\n    _target_probe_reset(db)')
-    code = code.replace(SETTER, '_target_probe_set(db, dc, db.per_instance_state.dofs[name], float(position), name)')
+    code = code.replace(
+        SETTER,
+        '_target_probe_set(db, dc, db.per_instance_state.dofs[name], float(position), name)',
+    )
     code += HELPERS.replace("name == 'FL_calf_joint'", f'name == {joint!r}')
     compile(code, '<fixed-command-probe>', 'exec')
     return code

@@ -1,8 +1,9 @@
 """Inactive-policy replacement. Loading never grants command authority."""
+
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from uuid import UUID
 import time
+from uuid import UUID
 
 
 class PolicyReload:
@@ -26,8 +27,14 @@ class PolicyReload:
         self.poll()
         old = self.operations.get(operation_id)
         if action == 'start':
-            required = {'action', 'request_id', 'bundle_id', 'copy_revision',
-                        'expected_incarnation', 'expected_session_id'}
+            required = {
+                'action',
+                'request_id',
+                'bundle_id',
+                'copy_revision',
+                'expected_incarnation',
+                'expected_session_id',
+            }
             if set(request) != required:
                 raise ValueError('Invalid policy reload fields')
             if old:
@@ -40,8 +47,13 @@ class PolicyReload:
                 raise ValueError('Policy output must be confirmed released')
             if request['expected_session_id'] != self.session():
                 raise ValueError('Policy session changed; refresh before loading')
-            old = {'request_id': operation_id, 'request': deepcopy(request),
-                   'state': 'loading', 'message': 'Loading policy', 'started': self.clock()}
+            old = {
+                'request_id': operation_id,
+                'request': deepcopy(request),
+                'state': 'loading',
+                'message': 'Loading policy',
+                'started': self.clock(),
+            }
             self.operations[operation_id] = old
             self.pending = old
             self.unavailable = True
@@ -51,7 +63,10 @@ class PolicyReload:
             if set(request) != {'action', 'request_id'} or old is None:
                 raise ValueError('Unknown policy reload operation')
             if action == 'cancel' and old['state'] in {'loading', 'ready'}:
-                old['state'], old['message'] = 'cancelled', 'Reload cancelled; policy remains inactive'
+                old['state'], old['message'] = (
+                    'cancelled',
+                    'Reload cancelled; policy remains inactive',
+                )
                 if old.get('context') is not None:
                     self._discard(old)
             if action == 'commit' and old['state'] == 'ready':
@@ -59,7 +74,10 @@ class PolicyReload:
                     raise ValueError('Policy output release is no longer confirmed')
                 try:
                     old['loaded'] = self.install(old['context'])
-                    old['state'], old['message'] = 'succeeded', 'Policy loaded; switch to Policy explicitly'
+                    old['state'], old['message'] = (
+                        'succeeded',
+                        'Policy loaded; switch to Policy explicitly',
+                    )
                     old.pop('context')
                     self.pending = None
                     self.unavailable = False
@@ -97,7 +115,10 @@ class PolicyReload:
                 self.pending = None
         if self.pending is old and self.clock() - old['started'] > 90:
             # Never abandon a running loader or allow a second load after timeout.
-            old['state'], old['message'] = 'cancelled', 'Loading deadline exceeded; waiting for loader cleanup'
+            old['state'], old['message'] = (
+                'cancelled',
+                'Loading deadline exceeded; waiting for loader cleanup',
+            )
             self.unavailable = True
             if old.get('future') is None:
                 self._discard(old)

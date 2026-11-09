@@ -3,18 +3,10 @@
 import json
 from pathlib import Path
 
-from marvin_policy_server.concurrent_policy.history import (
-    EstimatorFeatureHistory,
-)
-from marvin_policy_server.concurrent_policy.manifest import (
-    load_concurrent_policy_manifest,
-)
-from marvin_policy_server.concurrent_policy.runner import (
-    ConcurrentPolicyRunner,
-)
-
+from marvin_policy_server.concurrent_policy.history import EstimatorFeatureHistory
+from marvin_policy_server.concurrent_policy.manifest import load_concurrent_policy_manifest
+from marvin_policy_server.concurrent_policy.runner import ConcurrentPolicyRunner
 import numpy as np
-
 import torch
 
 
@@ -114,20 +106,18 @@ def _manifest(directory: Path):
     policy_path = directory / 'combined_policy.pt'
     policy_path.write_bytes(b'test')
     (directory / 'metadata.json').write_text(
-        json.dumps(
-            {
-                'schema': 'marvin.concurrent_policy_export.v1',
-                'artifacts': {'combined_policy': 'combined_policy.pt'},
-                'dimensions': {
-                    'base_policy_observation': 4,
-                    'actor_observation': 24,
-                    'raw_estimator_feature': 3,
-                    'estimator_history': 2,
-                    'estimated_state': 11,
-                    'joint_action': 2,
-                },
-            }
-        ),
+        json.dumps({
+            'schema': 'marvin.concurrent_policy_export.v1',
+            'artifacts': {'combined_policy': 'combined_policy.pt'},
+            'dimensions': {
+                'base_policy_observation': 4,
+                'actor_observation': 24,
+                'raw_estimator_feature': 3,
+                'estimator_history': 2,
+                'estimated_state': 11,
+                'joint_action': 2,
+            },
+        }),
         encoding='utf-8',
     )
     return policy_path, load_concurrent_policy_manifest(policy_path)
@@ -165,16 +155,13 @@ def test_manifest_and_runner_preserve_decimation(tmp_path: Path):
     _, manifest = _manifest(tmp_path)
     assert manifest is not None
     from marvin_policy_server.artifact_identity import artifact_identity
+
     assert manifest.loaded_artifact == artifact_identity(manifest.path, manifest.path.read_bytes())
     runner = ConcurrentPolicyRunner(_Policy(), manifest, decimation=2)
 
-    first = runner.step(
-        np.array([1.0, 2.0, 3.0, 4.0]), np.array([0.5, 1.5, 2.5])
-    )
+    first = runner.step(np.array([1.0, 2.0, 3.0, 4.0]), np.array([0.5, 1.5, 2.5]))
     held = runner.step(None)
-    second = runner.step(
-        np.array([2.0, 3.0, 4.0, 5.0]), np.array([1.0, 2.0, 3.0])
-    )
+    second = runner.step(np.array([2.0, 3.0, 4.0, 5.0]), np.array([1.0, 2.0, 3.0]))
 
     np.testing.assert_allclose(first, [1.5, 3.5])
     np.testing.assert_allclose(held, first)
@@ -204,9 +191,7 @@ def test_runner_can_replace_estimator_auxiliary_actor_inputs(tmp_path: Path):
     """Override FK, height, and contact while preserving raw estimates."""
     _, manifest = _manifest(tmp_path)
     assert manifest is not None
-    runner = ConcurrentPolicyRunner(
-        _AuxSplitPolicy(), manifest, decimation=1
-    )
+    runner = ConcurrentPolicyRunner(_AuxSplitPolicy(), manifest, decimation=1)
 
     action = runner.step(
         np.array([9.0, 8.0, 7.0, 6.0]),
@@ -219,8 +204,7 @@ def test_runner_can_replace_estimator_auxiliary_actor_inputs(tmp_path: Path):
     np.testing.assert_allclose(action, [0.25, 0.7])
     np.testing.assert_allclose(
         runner.latest_estimated_state,
-        [0.4, -0.2, 0.1, 0.0, 0.0, 0.0, 0.0,
-         0.5, 0.5, 0.5, 0.5],
+        [0.4, -0.2, 0.1, 0.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5],
     )
     np.testing.assert_allclose(runner.latest_foot_positions, np.zeros(12))
     np.testing.assert_allclose(runner.current_foot_positions(), np.zeros(12))

@@ -1,4 +1,5 @@
-from setuptools import find_packages, setup
+from setuptools import find_packages
+from setuptools import setup
 
 package_name = 'marvin_policy_server'
 
@@ -9,7 +10,7 @@ setup(
     data_files=[
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
-        ('share/' + package_name + '/launch', ['launch/marvin_policy_server.launch.py']),        
+        ('share/' + package_name + '/launch', ['launch/marvin_policy_server.launch.py']),
         ('share/' + package_name + '/policy', ['policy/policy.pt']),
         ('share/' + package_name + '/policy', ['policy/env.yaml']),
         ('share/' + package_name + '/policy', ['policy/velocity_estimator.pt']),

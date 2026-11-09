@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime
+from datetime import timezone
 import json
 import os
 from pathlib import Path
 import time
 from typing import Sequence
-
 
 SCHEMA_VERSION = 'marvin.joy_commands.v1'
 CSV_FIELDS = (
@@ -38,7 +38,8 @@ def _scale_axis(value: float, negative_max: float, positive_max: float) -> float
 
 
 def policy_velocity_command_from_axes(axes: Sequence[float]) -> tuple[float, float, float]:
-    """Apply the policy server's Joy-to-body-command mapping.
+    """
+    Apply the policy server's Joy-to-body-command mapping.
 
     Returns forward velocity, lateral velocity, and yaw rate.
     """
@@ -76,7 +77,7 @@ class JoyCommandSessionWriter:
         self._write_metadata('recording')
 
     def _create_session_dir(self) -> Path:
-        stem = f"joy_{self.started_at.strftime('%Y%m%dT%H%M%SZ')}_{os.getpid()}"
+        stem = f'joy_{self.started_at.strftime("%Y%m%dT%H%M%SZ")}_{os.getpid()}'
         for suffix in range(1000):
             name = stem if suffix == 0 else f'{stem}_{suffix}'
             candidate = self.output_root / name
@@ -105,15 +106,9 @@ class JoyCommandSessionWriter:
                 'command_angular_z': 'rad/s',
             },
             'command_mapping': {
-                'linear_x': (
-                    'axis[1], deadband=0.06, negative_scale=1.0, positive_scale=1.0'
-                ),
-                'linear_y': (
-                    'axis[3], deadband=0.13, negative_scale=1.0, positive_scale=1.0'
-                ),
-                'angular_z': (
-                    'axis[0], deadband=0.06, negative_scale=1.0, positive_scale=1.0'
-                ),
+                'linear_x': 'axis[1], deadband=0.06, negative_scale=1.0, positive_scale=1.0',
+                'linear_y': 'axis[3], deadband=0.13, negative_scale=1.0, positive_scale=1.0',
+                'angular_z': 'axis[0], deadband=0.06, negative_scale=1.0, positive_scale=1.0',
             },
             'columns': list(CSV_FIELDS),
         }
@@ -141,9 +136,7 @@ class JoyCommandSessionWriter:
         if self._closed:
             raise RuntimeError('Cannot append to a closed Joy recording')
         current_monotonic = (
-            time.monotonic()
-            if monotonic_time_sec is None
-            else float(monotonic_time_sec)
+            time.monotonic() if monotonic_time_sec is None else float(monotonic_time_sec)
         )
         elapsed_sec = max(0.0, current_monotonic - self.started_monotonic)
         linear_x, linear_y, angular_z = policy_velocity_command_from_axes(axes)
@@ -155,12 +148,8 @@ class JoyCommandSessionWriter:
             'command_linear_x': f'{linear_x:.9f}',
             'command_linear_y': f'{linear_y:.9f}',
             'command_angular_z': f'{angular_z:.9f}',
-            'axes_json': json.dumps(
-                [float(value) for value in axes], separators=(',', ':')
-            ),
-            'buttons_json': json.dumps(
-                [int(value) for value in buttons], separators=(',', ':')
-            ),
+            'axes_json': json.dumps([float(value) for value in axes], separators=(',', ':')),
+            'buttons_json': json.dumps([int(value) for value in buttons], separators=(',', ':')),
         })
         self.sample_count += 1
         self._last_elapsed_sec = elapsed_sec

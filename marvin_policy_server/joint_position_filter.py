@@ -21,9 +21,7 @@ class ExponentialJointPositionFilter:
         self._value = None
         self._last_time_seconds = None
 
-    def update(
-        self, value: np.ndarray, time_seconds: float
-    ) -> np.ndarray:
+    def update(self, value: np.ndarray, time_seconds: float) -> np.ndarray:
         """Filter one finite position vector using elapsed wall/sim time."""
         current = np.asarray(value, dtype=np.float64).reshape(-1)
         now = float(time_seconds)

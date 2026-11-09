@@ -14,8 +14,13 @@ class RunnerTask:
         args, kwargs = payload
         action = self.runner.step(*args, **kwargs).copy()
         state = {}
-        for name in ('latest_estimated_state', 'latest_effective_velocity',
-                     'latest_foot_positions', 'latest_result_monotonic', 'history'):
+        for name in (
+            'latest_estimated_state',
+            'latest_effective_velocity',
+            'latest_foot_positions',
+            'latest_result_monotonic',
+            'history',
+        ):
             if hasattr(self.runner, name):
                 state[name] = deepcopy(getattr(self.runner, name))
         return action, state
@@ -23,15 +28,18 @@ class RunnerTask:
 
 def create_runner_task(spec):
     """Load and warm a CPU-only model in the spawned process, never a ROS node."""
-    from pathlib import Path
     import hashlib
     import io
+    from pathlib import Path
+
     import numpy as np
     import torch
+
     from .concurrent_policy.manifest import load_concurrent_policy_manifest
     from .concurrent_policy.optimized import optimize_policy
     from .concurrent_policy.runner import ConcurrentPolicyRunner
-    from .policy_runner import PolicyRunner, PolicyRunnerConfig
+    from .policy_runner import PolicyRunner
+    from .policy_runner import PolicyRunnerConfig
 
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
@@ -46,8 +54,11 @@ def create_runner_task(spec):
         if manifest is None:
             raise ValueError('Compact estimator requires a combined artifact')
         policy = optimize_policy(policy, manifest)
-    runner = (ConcurrentPolicyRunner(policy, manifest, decimation=4) if manifest else
-              PolicyRunner(policy, spec['action_count'], PolicyRunnerConfig()))
+    runner = (
+        ConcurrentPolicyRunner(policy, manifest, decimation=4)
+        if manifest
+        else PolicyRunner(policy, spec['action_count'], PolicyRunnerConfig())
+    )
     task = RunnerTask(runner)
     args = (np.zeros(spec['observation_count'], dtype=np.float32),)
     if manifest:

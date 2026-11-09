@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Create a separate USD diagnostic layer. Never edit the reference scene."""
+
 import argparse
 import hashlib
 from pathlib import Path
 
-
 NODE = '/World/marvin_isaacsim_ros/Graph/ROS_Joint_States/script_node'
-SIM_TIME = '/World/marvin_isaacsim_ros/Graph/ROS_Joint_States/isaac_read_simulation_time.outputs:simulationTime'
-WRAPPER = r'''
+SIM_TIME = ('/World/marvin_isaacsim_ros/Graph/ROS_Joint_States/'
+            'isaac_read_simulation_time.outputs:simulationTime')
+WRAPPER = r"""
 
 # Diagnostic wrapper: original target calculation remains authoritative.
 import time as _probe_time
@@ -52,7 +53,8 @@ def _probe_emit(db):
         buffer_sim_age_min_ms=1000*min(sim_ages) if sim_ages else None,
         buffer_sim_age_max_ms=1000*max(sim_ages) if sim_ages else None,
         callback_sim_hz=(len(rows)-1)/sim_span if sim_span is not None and sim_span > 0 else None,
-        real_time_factor=sim_span/span if sim_span is not None and sim_span >= 0 and span > 0 else None,
+        real_time_factor=(sim_span/span
+                          if sim_span is not None and sim_span >= 0 and span > 0 else None),
         clock='monotonic_at_script_entry_and_graph_simulation_time',
     )), flush=True)
     rows.clear()
@@ -71,21 +73,24 @@ def compute(db):
     queue = db.internal_state.probe_queue
     queue.append((now, values, sim_now))
     passthrough = len(queue) <= 6
-    expected_time, expected, expected_sim_time = (now, values, sim_now) if passthrough else queue.popleft()
+    expected_time, expected, expected_sim_time = (
+        (now, values, sim_now) if passthrough else queue.popleft())
     sim_age = (sim_now - expected_sim_time
-               if sim_now is not None and expected_sim_time is not None and sim_now >= expected_sim_time else None)
+               if sim_now is not None and expected_sim_time is not None
+               and sim_now >= expected_sim_time else None)
     result = _original_compute(db)
     actual = list(db.outputs.delayed_position_command)
     matches = len(actual) == len(expected) and all(a == b for a,b in zip(actual, expected))
     db.internal_state.probe_count += 1
-    db.internal_state.probe_rows.append((now, now-expected_time, passthrough, matches, sim_now, sim_age))
+    db.internal_state.probe_rows.append(
+        (now, now-expected_time, passthrough, matches, sim_now, sim_age))
     if len(db.internal_state.probe_rows) >= 30:
         _probe_emit(db)
     return result
 
 def cleanup(db):
     _probe_emit(db)
-'''
+"""
 
 
 def instrument(source):
@@ -93,11 +98,18 @@ def instrument(source):
     if source.count(marker) != 1 or source.count('delay_steps = 6') != 1:
         raise ValueError('Unexpected source buffer; review before instrumenting')
     # Replace per-callback debug output with a bounded diagnostic summary.
-    return source.replace(marker, '        # Per-callback debug print suppressed in diagnostic layer.') + WRAPPER
+    return (
+        source.replace(
+            marker, '        # Per-callback debug print suppressed in diagnostic layer.'
+        )
+        + WRAPPER
+    )
 
 
 def prepare(scene, output):
-    from pxr import Usd, Sdf
+    from pxr import Sdf
+    from pxr import Usd
+
     scene = scene.resolve(strict=True)
     if output.exists():
         raise ValueError('Diagnostic output already exists; do not overwrite evidence')
@@ -113,14 +125,19 @@ def prepare(scene, output):
         if key not in ('subLayers', 'subLayerOffsets', 'customLayerData'):
             layer.pseudoRoot.SetInfo(key, original.GetRootLayer().pseudoRoot.GetInfo(key))
     layer.subLayerPaths = [str(scene)]
-    layer.customLayerData = dict(original.GetRootLayer().customLayerData, **dict(
-        reference_scene_sha256=hashlib.sha256(scene.read_bytes()).hexdigest(),
-        reference_script_sha256=hashlib.sha256(source.encode()).hexdigest(),
-        diagnostic='buffer timing only; not the reference scene',
-    ))
+    layer.customLayerData = dict(
+        original.GetRootLayer().customLayerData,
+        **{
+            'reference_scene_sha256': hashlib.sha256(scene.read_bytes()).hexdigest(),
+            'reference_script_sha256': hashlib.sha256(source.encode()).hexdigest(),
+            'diagnostic': 'buffer timing only; not the reference scene',
+        },
+    )
     stage = Usd.Stage.Open(layer)
     stage.OverridePrim(NODE).CreateAttribute('inputs:script', Sdf.ValueTypeNames.String).Set(code)
-    stage.OverridePrim(NODE).CreateAttribute('inputs:probeSimulationTime', Sdf.ValueTypeNames.Double).SetConnections([SIM_TIME])
+    stage.OverridePrim(NODE).CreateAttribute(
+        'inputs:probeSimulationTime', Sdf.ValueTypeNames.Double
+    ).SetConnections([SIM_TIME])
     layer.Save()
     return str(output.resolve())
 

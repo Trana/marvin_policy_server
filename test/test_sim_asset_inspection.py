@@ -1,16 +1,19 @@
 """Run with the existing USD Python environment; no simulator required."""
+
 import importlib.util
 from pathlib import Path
 import tempfile
 import unittest
 
 try:
-    from pxr import Usd, UsdPhysics
+    from pxr import Usd
+    from pxr import UsdPhysics
 except ImportError:
     Usd = UsdPhysics = None
 
 spec = importlib.util.spec_from_file_location(
-    'asset_inspection', Path(__file__).parents[1] / 'scripts/inspect_sim_asset.py')
+    'asset_inspection', Path(__file__).parents[1] / 'scripts/inspect_sim_asset.py'
+)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 

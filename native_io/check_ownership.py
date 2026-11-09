@@ -8,23 +8,29 @@ from pathlib import Path
 
 def main():
     if os.environ.get('ROS_DOMAIN_ID') != '184' or os.environ.get('ROS_LOCALHOST_ONLY') != '1':
-        raise SystemExit('Ownership check requires private domain 184 and localhost-only discovery')
+        raise SystemExit(
+            'Ownership check requires private domain 184 and localhost-only discovery'
+        )
     parser = argparse.ArgumentParser()
     parser.add_argument('--model', required=True, type=Path)
     parser.add_argument('--env', required=True, type=Path)
     args = parser.parse_args()
+    from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
     import rclpy
-    import torch
     from rclpy.executors import SingleThreadedExecutor
     from rclpy.node import Node
     from std_srvs.srv import Trigger
-    from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
+    import torch
+
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     options = {
-        'policy_path': str(args.model.resolve()), 'env_path': str(args.env.resolve()),
-        'compact_estimator': 'true', 'async_inference': 'false',
-        'lean_qos_events': 'true', 'tracing_mode': '"off"',
+        'policy_path': str(args.model.resolve()),
+        'env_path': str(args.env.resolve()),
+        'compact_estimator': 'true',
+        'async_inference': 'false',
+        'lean_qos_events': 'true',
+        'tracing_mode': '"off"',
         'publish_trace_events': 'false',
     }
     ros_args = ['--ros-args']
@@ -44,9 +50,9 @@ def main():
         executor.add_node(node)
         executor.add_node(client_node)
         client = client_node.create_client(Trigger, '/get_policy_observations')
-        assert client.wait_for_service(timeout_sec=5.), 'Management service not discovered'
+        assert client.wait_for_service(timeout_sec=5.0), 'Management service not discovered'
         future = client.call_async(Trigger.Request())
-        executor.spin_until_future_complete(future, timeout_sec=5.)
+        executor.spin_until_future_complete(future, timeout_sec=5.0)
         assert future.done() and future.result().success, 'Management request did not complete'
         payload = json.loads(future.result().message)
         assert payload['observations'], 'Observation API returned no fields'

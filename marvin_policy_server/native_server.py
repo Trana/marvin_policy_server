@@ -1,4 +1,5 @@
-"""Opt-in native ROS I/O with the existing Python policy management API.
+"""
+Opt-in native ROS I/O with the existing Python policy management API.
 
 The ROS executor owns Python policy state. A bounded IPC reader wakes it for
 sensor snapshots and publication commits. C++ alone publishes joint commands.
@@ -23,9 +24,12 @@ from .inference_schedule import InferenceSchedule
 from .marvin_policy_server import MarvinPolicyServer
 from .native_channel import NativeChannel
 from .native_diagnostics import NativeDiagnostics
+from .native_profile import validate_environment
+from .native_profile import validate_profile
+from .native_protocol import Flags
+from .native_protocol import Kind
+from .native_protocol import Packet
 from .policy_gc_lifecycle import PolicyGcLifecycle
-from .native_protocol import Flags, Kind, Packet
-from .native_profile import validate_environment, validate_profile
 from .sensor_snapshot import SensorSnapshot
 
 
@@ -49,8 +53,11 @@ class NativePolicyServer(MarvinPolicyServer):
     def __init__(self):
         self._policy_gc = PolicyGcLifecycle()
         self._native_profile = os.environ.get('MARVIN_POLICY_NATIVE_PROFILE', 'test')
-        validate_environment(os.environ.get('ROS_DOMAIN_ID'),
-                             os.environ.get('ROS_LOCALHOST_ONLY'), self._native_profile)
+        validate_environment(
+            os.environ.get('ROS_DOMAIN_ID'),
+            os.environ.get('ROS_LOCALHOST_ONLY'),
+            self._native_profile,
+        )
         self._native_channel = None
         self._native_child = None
         self._frame = None
@@ -58,7 +65,7 @@ class NativePolicyServer(MarvinPolicyServer):
         self._native_fault = None
         self._native_request_timing = None
         self._native_status_flags = 0
-        self._native_status_at = 0.
+        self._native_status_at = 0.0
         self._native_status_generation = -1
         self._native_last_ros = None
         self._pending_result = None
@@ -75,7 +82,9 @@ class NativePolicyServer(MarvinPolicyServer):
                 self._native_diagnostics = NativeDiagnostics(diagnostic_path, self.joint_names)
             binary = Path(str(self.get_parameter('native_io_executable').value))
             if not binary.is_absolute() or not binary.is_file() or not os.access(binary, os.X_OK):
-                raise ValueError('native_io_executable must name an existing absolute executable path')
+                raise ValueError(
+                    'native_io_executable must name an existing absolute executable path'
+                )
             self._inference_schedule = SnapshotSchedule(self._policy_cadence.periods_ns)
             self._expected_tick_ns = 20_000_000
             # This subscription must not overwrite permission attached to a snapshot.
@@ -85,40 +94,62 @@ class NativePolicyServer(MarvinPolicyServer):
             parent, child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
             try:
                 self._native_child = subprocess.Popen(
-                    self._native_arguments(binary, child.fileno()), pass_fds=(child.fileno(),))
+                    self._native_arguments(binary, child.fileno()), pass_fds=(child.fileno(),)
+                )
                 self._native_channel = NativeChannel(parent, self._native_guard.trigger)
             except Exception:
                 parent.close()
                 raise
             finally:
                 child.close()
-            config = tuple(self.default_pos) + tuple(self._safety_min_pos) + tuple(self._safety_max_pos) + (
-                float(self._action_scale), self._activation_mgr.cfg.activation_ramp_duration,
-                self._activation_mgr.cfg.deactivation_ramp_duration,
-                float(self._action_output_mapping == 'smooth_bounded'),
-                float(self.get_parameter('inference_max_age_ms').value),
-                float(self.get_parameter('publish_period_ms').value),
-                float(self.get_parameter('trace_capture_seconds').value))
-            flags = (int(self._publish_legacy_commands) | (int(self._publish_traced_commands) << 1) |
-                     (int(self._timing.mode != 'off') << 2) |
-                     (int(self._timing.mode == 'capture' and self._publish_trace_events) << 3))
+            config = (
+                tuple(self.default_pos)
+                + tuple(self._safety_min_pos)
+                + tuple(self._safety_max_pos)
+                + (
+                    float(self._action_scale),
+                    self._activation_mgr.cfg.activation_ramp_duration,
+                    self._activation_mgr.cfg.deactivation_ramp_duration,
+                    float(self._action_output_mapping == 'smooth_bounded'),
+                    float(self.get_parameter('inference_max_age_ms').value),
+                    float(self.get_parameter('publish_period_ms').value),
+                    float(self.get_parameter('trace_capture_seconds').value),
+                )
+            )
+            flags = (
+                int(self._publish_legacy_commands)
+                | (int(self._publish_traced_commands) << 1)
+                | (int(self._timing.mode != 'off') << 2)
+                | (int(self._timing.mode == 'capture' and self._publish_trace_events) << 3)
+            )
             if self._execution_gateway:
                 flags = (flags & ~3) | 16
             prefix = (self._trace_source_id << 56) | (self._trace_instance_id << 40)
-            ack = self._native_channel.control(Packet(Kind.CONFIGURE, flags=flags, trace_id=prefix, values=config), timeout=5.)
+            ack = self._native_channel.control(
+                Packet(Kind.CONFIGURE, flags=flags, trace_id=prefix, values=config), timeout=5.0
+            )
             if not ack.flags & Flags.SUCCESS:
                 raise RuntimeError('Native configuration rejected')
             self._native_generation = ack.generation
-            self._logger.info('Native ROS I/O connected. Python management remains available; policy is inactive.')
+            self._logger.info(
+                'Native ROS I/O connected. Python management remains available; policy is'
+                ' inactive.'
+            )
         except Exception:
             self.close_native()
             raise
 
     def _validate_native_profile(self):
         domain = os.environ.get('ROS_DOMAIN_ID')
-        validate_profile(domain, self._native_profile, self.get_namespace(),
-                         bool(self.get_parameter('use_sim_time').value),
-                         self._operator_permission.required, self.joint_names, self._native_topics())
+        validate_profile(
+            domain,
+            self._native_profile,
+            self.get_namespace(),
+            bool(self.get_parameter('use_sim_time').value),
+            self._operator_permission.required,
+            self.joint_names,
+            self._native_topics(),
+        )
         if self._native_profile == 'marvin-v1':
             if self.get_parameter('inference_max_age_ms').value != 100.0:
                 raise ValueError('marvin-v1 requires inference_max_age_ms=100')
@@ -126,9 +157,18 @@ class NativePolicyServer(MarvinPolicyServer):
                 raise ValueError('marvin-v1 requires traced commands only')
             if self.resolve_topic_name(str(self.get_parameter('joy_topic').value)) != '/joy':
                 raise ValueError('marvin-v1 requires the robot-local /joy receiver')
-        if len(self.joint_names) != 12 or not self._safety_limits_enabled or not self._safety_limits_loaded:
-            raise ValueError('Native I/O requires twelve joints and enabled, loaded position limits')
-        if not np.isfinite(self._safety_min_pos).all() or not np.isfinite(self._safety_max_pos).all():
+        if (
+            len(self.joint_names) != 12
+            or not self._safety_limits_enabled
+            or not self._safety_limits_loaded
+        ):
+            raise ValueError(
+                'Native I/O requires twelve joints and enabled, loaded position limits'
+            )
+        if (
+            not np.isfinite(self._safety_min_pos).all()
+            or not np.isfinite(self._safety_max_pos).all()
+        ):
             raise ValueError('Native I/O requires finite limits for every joint')
         if self.get_parameter('publish_period_ms').value != 5:
             raise ValueError('Native I/O currently requires publish_period_ms=5')
@@ -137,7 +177,11 @@ class NativePolicyServer(MarvinPolicyServer):
         resolve = self.resolve_topic_name
         return {
             'joint_states_topic': resolve(self._joint_states_topic),
-            'dynamic_joint_states_topic': resolve(self._dynamic_joint_states_topic) if self._dynamic_joint_states_topic else '',
+            'dynamic_joint_states_topic': (
+                resolve(self._dynamic_joint_states_topic)
+                if self._dynamic_joint_states_topic
+                else ''
+            ),
             'imu_topic': resolve(self._imu_topic),
             'permission_topic': resolve('/operator/motion_permitted'),
             'command_topic': resolve(self._command_topic),
@@ -148,10 +192,12 @@ class NativePolicyServer(MarvinPolicyServer):
         }
 
     def _native_arguments(self, binary, fd):
-        params = dict(self._native_topics(),
-                      use_sim_time=bool(self.get_parameter('use_sim_time').value),
-                      joint_names=list(self.joint_names),
-                      operator_input_required=self._operator_permission.required)
+        params = dict(
+            self._native_topics(),
+            use_sim_time=bool(self.get_parameter('use_sim_time').value),
+            joint_names=list(self.joint_names),
+            operator_input_required=self._operator_permission.required,
+        )
         args = [str(binary), str(fd), '--ros-args', '-r', f'__ns:={self.get_namespace()}']
         for name, value in params.items():
             args += ['-p', f'{name}:={json.dumps(value)}']
@@ -170,9 +216,14 @@ class NativePolicyServer(MarvinPolicyServer):
             return outcome
         try:
             preparation = self._execution_preparation
-            ack = self._native_channel.control(Packet(
-                Kind.PREPARE, token=preparation.generation,
-                requested_ns=int(preparation.expires * 1e9), values=preparation.targets))
+            ack = self._native_channel.control(
+                Packet(
+                    Kind.PREPARE,
+                    token=preparation.generation,
+                    requested_ns=int(preparation.expires * 1e9),
+                    values=preparation.targets,
+                )
+            )
             if not ack.flags & Flags.SUCCESS:
                 raise ValueError('Native policy preparation rejected')
             self._observe_generation(ack.generation)
@@ -188,13 +239,20 @@ class NativePolicyServer(MarvinPolicyServer):
             return outcome
         if not active and self._native_output_process_exited():
             self._fail_native('Native output process exited', notify=False, output_stopped=True)
-            outcome.success, outcome.message = True, 'Native output process exited; output released'
+            outcome.success, outcome.message = (
+                True,
+                'Native output process exited; output released',
+            )
             return outcome
         if active and self._activation_mgr.state.active:
-            fresh = (time.monotonic() - self._native_status_at < .5 and
-                     self._native_status_generation == self._native_generation)
+            fresh = (
+                time.monotonic() - self._native_status_at < 0.5
+                and self._native_status_generation == self._native_generation
+            )
             outcome.success = bool(fresh and self._native_status_flags & Flags.ACTIVE)
-            outcome.message = 'Already active' if outcome.success else 'Native activation state is not confirmed'
+            outcome.message = (
+                'Already active' if outcome.success else 'Native activation state is not confirmed'
+            )
             return outcome
         try:
             # Validate preparation and reset inference before granting native output.
@@ -205,12 +263,16 @@ class NativePolicyServer(MarvinPolicyServer):
             if active:
                 self._policy_gc.enter_output_window()
             previous_action = self.action.copy()
-            ack = self._native_channel.control(Packet(Kind.ACTIVATE if active else Kind.DEACTIVATE))
+            ack = self._native_channel.control(
+                Packet(Kind.ACTIVATE if active else Kind.DEACTIVATE)
+            )
             if not ack.flags & Flags.SUCCESS:
                 if active:
                     # A rejected activation never grants native output.
                     self._policy_gc.confirm_output_stopped()
-                raise ValueError('Native activation rejected: sensor inputs or preparation are not ready')
+                raise ValueError(
+                    'Native activation rejected: sensor inputs or preparation are not ready'
+                )
             self._observe_generation(ack.generation)
             if not active:
                 self._policy_gc.request_restore()
@@ -251,10 +313,14 @@ class NativePolicyServer(MarvinPolicyServer):
         # proves that it cannot publish more commands, even without a final ACK.
         if self._native_output_process_exited():
             return {'active': False, 'output_released': True}
-        fresh = (time.monotonic() - self._native_status_at < .5 and
-                 self._native_status_generation == self._native_generation)
-        return {'active': bool(self._native_status_flags & Flags.ACTIVE),
-                'output_released': bool(fresh and self._native_status_flags & Flags.OUTPUT_RELEASED)}
+        fresh = (
+            time.monotonic() - self._native_status_at < 0.5
+            and self._native_status_generation == self._native_generation
+        )
+        return {
+            'active': bool(self._native_status_flags & Flags.ACTIVE),
+            'output_released': bool(fresh and self._native_status_flags & Flags.OUTPUT_RELEASED),
+        }
 
     def _observe_generation(self, generation):
         if generation <= self._native_generation:
@@ -271,10 +337,14 @@ class NativePolicyServer(MarvinPolicyServer):
 
     def _fail_native(self, message, *, notify=True, output_stopped=False):
         if self._native_fault != message:
-            self._logger.error(f'Native policy output stopped: {message}. Explicit reactivation is required.')
+            self._logger.error(
+                f'Native policy output stopped: {message}. Explicit reactivation is required.'
+            )
             timing = getattr(self, '_native_request_timing', None)
             if timing is not None:
-                self._logger.error('NATIVE_PYTHON_FAULT ' + json.dumps(timing, separators=(',', ':')))
+                self._logger.error(
+                    'NATIVE_PYTHON_FAULT ' + json.dumps(timing, separators=(',', ':'))
+                )
         self._native_fault = message
         self._pending_result = None
         self._activation_mgr.state.active = False
@@ -311,12 +381,19 @@ class NativePolicyServer(MarvinPolicyServer):
                 self._native_status_generation = packet.generation
                 self._policy_gc.observe_native_state(
                     active=bool(packet.flags & Flags.ACTIVE),
-                    output_released=bool(packet.flags & Flags.OUTPUT_RELEASED))
+                    output_released=bool(packet.flags & Flags.OUTPUT_RELEASED),
+                )
                 if packet.flags & Flags.FAULTED:
-                    reasons = {1: 'Inference deadline exceeded', 2: 'Invalid native result',
-                               3: 'Python/native transport heartbeat expired'}
-                    self._fail_native(reasons.get(packet.trace_id, 'Native lifecycle fault'),
-                                      notify=False, output_stopped=True)
+                    reasons = {
+                        1: 'Inference deadline exceeded',
+                        2: 'Invalid native result',
+                        3: 'Python/native transport heartbeat expired',
+                    }
+                    self._fail_native(
+                        reasons.get(packet.trace_id, 'Native lifecycle fault'),
+                        notify=False,
+                        output_stopped=True,
+                    )
                 if self._native_last_ros is not None and packet.ros_ns < self._native_last_ros:
                     if self._activation_mgr.is_active():
                         self._activation_mgr.state.activation_start_time = packet.ros_ns / 1e9
@@ -325,11 +402,15 @@ class NativePolicyServer(MarvinPolicyServer):
                 self._native_last_ros = packet.ros_ns
                 self._operator_permission.update(bool(packet.flags & Flags.PERMITTED))
                 if packet.flags & Flags.SENSORS_VALID:
-                    sensors = SensorSnapshot.from_values(self.joint_names, packet.joint_ns, packet.imu_ns, packet.values[:34])
+                    sensors = SensorSnapshot.from_values(
+                        self.joint_names, packet.joint_ns, packet.imu_ns, packet.values[:34]
+                    )
                     self._joint_state_cb(sensors.joint)
                     self._imu_cb(sensors.imu)
                     if packet.flags & Flags.ENCODER_TIMING:
-                        self._input_timing.received_encoders(sensors.joint, dict(zip(self.joint_names, packet.values[46:58])))
+                        self._input_timing.received_encoders(
+                            sensors.joint, dict(zip(self.joint_names, packet.values[46:58]))
+                        )
                 else:
                     self._latest_joint_state = self._latest_imu = None
                 if packet.kind == Kind.STATUS:
@@ -340,9 +421,11 @@ class NativePolicyServer(MarvinPolicyServer):
                 started_ns = time.monotonic_ns()
                 started_cpu_ns = time.thread_time_ns()
                 self._native_request_timing = {
-                    'sequence': packet.sequence, 'generation': packet.generation,
+                    'sequence': packet.sequence,
+                    'generation': packet.generation,
                     'request_to_callback_ms': (started_ns - packet.requested_ns) / 1e6,
-                    'callback_ms': None, 'request_to_result_send_ms': None,
+                    'callback_ms': None,
+                    'request_to_result_send_ms': None,
                     'callback_thread_cpu_ms': None,
                 }
                 if started_ns - packet.requested_ns > self._inference_max_age_ns:
@@ -354,9 +437,12 @@ class NativePolicyServer(MarvinPolicyServer):
                     if self._pending_result is None:
                         raise RuntimeError('Policy computation produced no native result')
                 finally:
-                    self._native_request_timing['callback_ms'] = (time.monotonic_ns() - started_ns) / 1e6
+                    self._native_request_timing['callback_ms'] = (
+                        time.monotonic_ns() - started_ns
+                    ) / 1e6
                     self._native_request_timing['callback_thread_cpu_ms'] = (
-                        time.thread_time_ns() - started_cpu_ns) / 1e6
+                        time.thread_time_ns() - started_cpu_ns
+                    ) / 1e6
                     self._frame = None
         except Exception as exc:
             self._frame = None
@@ -377,11 +463,15 @@ class NativePolicyServer(MarvinPolicyServer):
         if self._joint_command_output_locked and self._locked_joint_command is not None:
             locked = self._locked_joint_command
             flags |= Flags.OUTPUT_LOCKED
-        result = replace(self._frame, kind=Kind.RESULT, flags=int(flags), values=values + tuple(locked))
+        result = replace(
+            self._frame, kind=Kind.RESULT, flags=int(flags), values=values + tuple(locked)
+        )
         self._native_channel.send(result)
         timing = getattr(self, '_native_request_timing', None)
         if timing is not None:
-            timing['request_to_result_send_ms'] = (time.monotonic_ns() - self._frame.requested_ns) / 1e6
+            timing['request_to_result_send_ms'] = (
+                time.monotonic_ns() - self._frame.requested_ns
+            ) / 1e6
         self._pending_result = result
         self._history_requested = False
         diagnostics = getattr(self, '_native_diagnostics', None)
@@ -393,10 +483,13 @@ class NativePolicyServer(MarvinPolicyServer):
                 candidate = self._obs_state.velocity_commands_history[-1]
                 if np.isfinite(candidate).all():
                     effective_command = candidate
-            diagnostics.record('result_submitted', result,
-                               estimated_velocity=self._latest_estimated_velocity,
-                               sensor_values=self._frame.values[:34],
-                               effective_velocity_command=effective_command)
+            diagnostics.record(
+                'result_submitted',
+                result,
+                estimated_velocity=self._latest_estimated_velocity,
+                sensor_values=self._frame.values[:34],
+                effective_velocity_command=effective_command,
+            )
         return result.trace_id
 
     def _advance_action_history(self):
@@ -405,7 +498,10 @@ class NativePolicyServer(MarvinPolicyServer):
 
     def _commit(self, packet):
         pending = self._pending_result
-        if pending is None or (packet.sequence, packet.generation) != (pending.sequence, pending.generation):
+        if pending is None or (packet.sequence, packet.generation) != (
+            pending.sequence,
+            pending.generation,
+        ):
             return
         if len(packet.values) != 24 or packet.trace_id != pending.trace_id:
             raise ValueError('Invalid native publication commit')
@@ -423,7 +519,9 @@ class NativePolicyServer(MarvinPolicyServer):
     def _observation_status_payload(self):
         payload = super()._observation_status_payload()
         payload['execution'] = {
-            'io_backend': 'native', 'profile': self._native_profile, 'fault': self._native_fault,
+            'io_backend': 'native',
+            'profile': self._native_profile,
+            'fault': self._native_fault,
             'generation': self._native_generation,
             'native_active': bool(self._native_status_flags & Flags.ACTIVE),
             'sensors_valid': bool(self._native_status_flags & Flags.SENSORS_VALID),
@@ -439,16 +537,16 @@ class NativePolicyServer(MarvinPolicyServer):
                 self._native_channel.close()
             if self._native_child is not None:
                 try:
-                    self._native_child.wait(timeout=2.)
+                    self._native_child.wait(timeout=2.0)
                     child_stopped = True
                 except subprocess.TimeoutExpired:
                     self._native_child.terminate()
                     try:
-                        self._native_child.wait(timeout=2.)
+                        self._native_child.wait(timeout=2.0)
                         child_stopped = True
                     except subprocess.TimeoutExpired:
                         self._native_child.kill()
-                        self._native_child.wait(timeout=2.)
+                        self._native_child.wait(timeout=2.0)
                         child_stopped = True
         finally:
             if child_stopped:
@@ -467,6 +565,7 @@ class NativePolicyServer(MarvinPolicyServer):
 
 def main(args=None):
     import torch
+
     torch.set_num_threads(1)
     torch.set_num_interop_threads(1)
     rclpy.init(args=args)

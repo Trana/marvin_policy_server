@@ -1,11 +1,7 @@
 """Test the smooth bounded policy-action output mapping."""
 
-from marvin_policy_server.action_output_mapping import (
-    SmoothBoundedActionMapper,
-)
-
+from marvin_policy_server.action_output_mapping import SmoothBoundedActionMapper
 import numpy as np
-
 import pytest
 
 
@@ -20,12 +16,8 @@ def test_smooth_mapping_preserves_default_and_local_linear_gain() -> None:
 
     np.testing.assert_allclose(mapper.map_action(np.zeros(2)), [0.1, -0.2])
     epsilon = 1.0e-6
-    positive_slope = (
-        mapper.map_action(np.full(2, epsilon)) - np.array([0.1, -0.2])
-    ) / epsilon
-    negative_slope = (
-        mapper.map_action(np.full(2, -epsilon)) - np.array([0.1, -0.2])
-    ) / -epsilon
+    positive_slope = (mapper.map_action(np.full(2, epsilon)) - np.array([0.1, -0.2])) / epsilon
+    negative_slope = (mapper.map_action(np.full(2, -epsilon)) - np.array([0.1, -0.2])) / -epsilon
     np.testing.assert_allclose(positive_slope, 0.25, rtol=1.0e-6, atol=1.0e-8)
     np.testing.assert_allclose(negative_slope, 0.25, rtol=1.0e-6, atol=1.0e-8)
 
@@ -61,9 +53,7 @@ def test_smooth_mapping_approaches_asymmetric_limits() -> None:
         ([0.0], [-np.inf], [1.0]),
     ],
 )
-def test_smooth_mapping_rejects_invalid_limits(
-    default, minimum, maximum
-) -> None:
+def test_smooth_mapping_rejects_invalid_limits(default, minimum, maximum) -> None:
     """Reject incomplete limits or defaults on an endpoint."""
     with pytest.raises(ValueError):
         SmoothBoundedActionMapper(

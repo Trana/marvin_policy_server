@@ -1,4 +1,5 @@
 """Identity of the exact bytes given to a loader, not a later disk snapshot."""
+
 import hashlib
 from pathlib import Path
 
