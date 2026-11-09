@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Create an isolated ROS routing layer; preserve source physics and commands.
+"""
+Create an isolated ROS routing layer; preserve source physics and commands.
 
 Run Isaac with ROS_DOMAIN_ID=231 and ROS_LOCALHOST_ONLY=1 as well.
 This layer does not activate a controller or provide network authentication.
 """
+
 import argparse
 import hashlib
 from pathlib import Path
 
 
 def prepare(scene, output):
-    from pxr import Sdf, Usd
+    from pxr import Sdf
+    from pxr import Usd
+
     scene = Path(scene).resolve(strict=True)
     output = Path(output)
     if output.exists():
@@ -62,9 +66,11 @@ def prepare(scene, output):
         if key not in ('subLayers', 'subLayerOffsets', 'customLayerData'):
             layer.pseudoRoot.SetInfo(key, original.GetRootLayer().pseudoRoot.GetInfo(key))
     layer.subLayerPaths = [str(scene)]
-    layer.customLayerData = dict(original.GetRootLayer().customLayerData,
+    layer.customLayerData = dict(
+        original.GetRootLayer().customLayerData,
         reference_scene_sha256=hashlib.sha256(scene.read_bytes()).hexdigest(),
-        diagnostic='isolated joint test routing only; requires localhost-only process')
+        diagnostic='isolated joint test routing only; requires localhost-only process',
+    )
     stage = Usd.Stage.Open(layer)
     for prim in contexts:
         target = stage.OverridePrim(prim.GetPath())

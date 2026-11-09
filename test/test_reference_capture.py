@@ -1,16 +1,17 @@
 """Validate capture admission without importing ROS or starting a recorder."""
-import importlib.util
+
 import hashlib
+import importlib.util
 import json
+from pathlib import Path
 import socket
 from types import SimpleNamespace
-from pathlib import Path
 
 import pytest
 
-
 spec = importlib.util.spec_from_file_location(
-    'capture_reference_run', Path(__file__).parents[1] / 'scripts/capture_reference_run.py')
+    'capture_reference_run', Path(__file__).parents[1] / 'scripts/capture_reference_run.py'
+)
 capture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(capture)
 
@@ -18,8 +19,14 @@ spec.loader.exec_module(capture)
 def test_default_sim_endpoints_include_namespaced_commands_and_clocks():
     topics, service = capture.capture_endpoints('sim')
     assert service == '/sim/get_policy_observations'
-    assert {'/sim/marvin_joint_controller/commands_traced', '/isaac_joint_commands',
-            '/isaac_joint_states', '/isaac_imu', '/isaac_odometry', '/clock'} <= set(topics)
+    assert {
+        '/sim/marvin_joint_controller/commands_traced',
+        '/isaac_joint_commands',
+        '/isaac_joint_states',
+        '/isaac_imu',
+        '/isaac_odometry',
+        '/clock',
+    } <= set(topics)
     assert '/marvin_joint_controller/commands_traced' not in topics
     assert '/sim/joint_states' not in topics
     assert len(topics) == len(set(topics))
@@ -37,9 +44,14 @@ def test_robot_endpoints_preserve_real_namespace():
 def test_joint_test_endpoints_and_domain_are_isolated(monkeypatch):
     topics, service = capture.capture_endpoints('sim_joint_test')
     assert service == '/joint_test/joint_test_controller/joint_test/state'
-    assert set(topics) == {'/joint_test/isaac_joint_commands', '/joint_test/isaac_joint_states',
+    assert set(topics) == {
+        '/joint_test/isaac_joint_commands',
+        '/joint_test/isaac_joint_states',
         '/joint_test/joint_test_controller/joint_test/target_samples',
-        '/joint_test/joint_test_controller/status', '/clock', '/rosout'}
+        '/joint_test/joint_test_controller/status',
+        '/clock',
+        '/rosout',
+    }
     monkeypatch.setenv('ROS_DOMAIN_ID', '231')
     monkeypatch.setenv('ROS_LOCALHOST_ONLY', '1')
     args = ['--target', 'sim_joint_test', '--output', '/unused']
@@ -53,16 +65,37 @@ def test_joint_test_endpoints_and_domain_are_isolated(monkeypatch):
 
 
 def test_typed_status_keeps_evidence_but_omits_movement_challenge():
-    state = SimpleNamespace(phase='execution_hold', reason_code='LEASE_EXPIRED',
-        applied_sequence=7, permit_challenge='short-lived', motion_available=False)
+    state = SimpleNamespace(
+        phase='execution_hold',
+        reason_code='LEASE_EXPIRED',
+        applied_sequence=7,
+        permit_challenge='short-lived',
+        motion_available=False,
+    )
     state.get_fields_and_field_types = lambda: {
-        key: 'unused' for key in ('phase', 'reason_code', 'applied_sequence', 'permit_challenge', 'motion_available')}
+        key: 'unused'
+        for key in (
+            'phase',
+            'reason_code',
+            'applied_sequence',
+            'permit_challenge',
+            'motion_available',
+        )
+    }
     row = capture.status_payload('sim_joint_test', SimpleNamespace(state=state))
-    assert row == {'state': {'phase': 'execution_hold', 'reason_code': 'LEASE_EXPIRED',
-                            'applied_sequence': 7, 'motion_available': False}}
+    assert row == {
+        'state': {
+            'phase': 'execution_hold',
+            'reason_code': 'LEASE_EXPIRED',
+            'applied_sequence': 7,
+            'motion_available': False,
+        }
+    }
     assert capture.status_payload('robot_joint_test', SimpleNamespace(state=state)) == row
     assert capture.status_payload('robot', SimpleNamespace(success=True, message='cached')) == {
-        'success': True, 'message': 'cached'}
+        'success': True,
+        'message': 'cached',
+    }
 
 
 def test_robot_joint_recording_requires_explicit_provenance(monkeypatch):
@@ -74,11 +107,16 @@ def test_robot_joint_recording_requires_explicit_provenance(monkeypatch):
     args += ['--artifact', '/supplied/profile.yaml']
     with pytest.raises(SystemExit):
         capture.parse_args(args)
-    args += ['--joint-test-controller', '/joint_test_controller',
-             '--joint-test-command-topic', '/joint_test_controller/applied_targets']
+    args += [
+        '--joint-test-controller',
+        '/joint_test_controller',
+        '--joint-test-command-topic',
+        '/joint_test_controller/applied_targets',
+    ]
     assert capture.parse_args(args).target == 'robot_joint_test'
-    topics, service = capture.capture_endpoints('robot_joint_test', '/joint_test_controller',
-                                               '/joint_test_controller/applied_targets')
+    topics, service = capture.capture_endpoints(
+        'robot_joint_test', '/joint_test_controller', '/joint_test_controller/applied_targets'
+    )
     assert service == '/joint_test_controller/joint_test/state'
     assert '/joint_states' in topics and '/dynamic_joint_states' in topics
     assert '/joint_test_controller/joint_test/target_samples' in topics
@@ -89,9 +127,19 @@ def test_robot_joint_recording_requires_explicit_provenance(monkeypatch):
         capture.parse_args(args)
 
 
-@pytest.mark.parametrize('topic', ['/marvin_joint_controller/commands', '/marvin_joint_controller/commands_traced',
-                                 '/joint_states', '/dynamic_joint_states', '/joint_test_controller/status',
-                                 'relative', '/bad name', '/'])
+@pytest.mark.parametrize(
+    'topic',
+    [
+        '/marvin_joint_controller/commands',
+        '/marvin_joint_controller/commands_traced',
+        '/joint_states',
+        '/dynamic_joint_states',
+        '/joint_test_controller/status',
+        'relative',
+        '/bad name',
+        '/',
+    ],
+)
 def test_robot_joint_recording_rejects_ambiguous_sources(topic):
     with pytest.raises(ValueError):
         capture.capture_endpoints('robot_joint_test', '/joint_test_controller', topic)
@@ -164,8 +212,15 @@ def test_finalized_capture_rejects_event_mutation(tmp_path):
 def test_topics_only_and_session_config(monkeypatch):
     monkeypatch.setenv('ROS_DOMAIN_ID', '0')
     monkeypatch.setenv('ROS_LOCALHOST_ONLY', '1')
-    args = capture.parse_args(['--target', 'robot', '--output', '/unused', '--topics-only',
-                               '--session-config', '/supplied/session.json'])
+    args = capture.parse_args([
+        '--target',
+        'robot',
+        '--output',
+        '/unused',
+        '--topics-only',
+        '--session-config',
+        '/supplied/session.json',
+    ])
     assert args.topics_only and args.session_config == Path('/supplied/session.json')
 
 
@@ -174,9 +229,11 @@ def test_progress_does_not_open_database(tmp_path, monkeypatch):
     (tmp_path / 'topics/data.db3').write_bytes(b'not a real database')
     (tmp_path / 'recorder.log').write_text("Subscribed to topic '/joint_states'\n")
     original = Path.open
+
     def guarded_open(self, *args, **kwargs):
         assert self.suffix != '.db3', 'Live database must never be opened'
         return original(self, *args, **kwargs)
+
     monkeypatch.setattr(Path, 'open', guarded_open)
     progress = capture.capture_progress(tmp_path, 'recording')
     assert progress['bag_bytes'] == 19
@@ -185,7 +242,9 @@ def test_progress_does_not_open_database(tmp_path, monkeypatch):
 
 
 def test_clean_stop_admission(tmp_path):
-    spec = importlib.util.spec_from_file_location('capture_control', Path(__file__).parents[1] / 'scripts/capture_control.py')
+    spec = importlib.util.spec_from_file_location(
+        'capture_control', Path(__file__).parents[1] / 'scripts/capture_control.py'
+    )
     control = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(control)
     capture.capture_progress(tmp_path, 'recording')

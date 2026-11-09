@@ -1,4 +1,5 @@
 """Single-threaded ROS-clock deadlines; no catch-up inference bursts."""
+
 from collections import deque
 
 
@@ -7,8 +8,12 @@ class InferenceSchedule:
 
     def __init__(self, period_ns):
         periods = (period_ns,) if type(period_ns) is int else period_ns
-        if (not isinstance(periods, (list, tuple)) or not periods or len(periods) > 1024 or
-                any(type(p) is not int or p <= 0 for p in periods)):
+        if (
+            not isinstance(periods, (list, tuple))
+            or not periods
+            or len(periods) > 1024
+            or any(type(p) is not int or p <= 0 for p in periods)
+        ):
             raise ValueError('Inference periods must be positive integer nanoseconds')
         self.periods_ns = tuple(periods)
         self.period_ns = self.periods_ns[0]
@@ -58,7 +63,14 @@ class InferenceSchedule:
 
     def observed(self):
         stamps = self.observations
-        rate = ((len(stamps)-1)*1e9/(stamps[-1]-stamps[0])
-                if len(stamps) > 1 and stamps[-1] > stamps[0] else None)
-        return dict(sample_count=len(stamps), mean_hz=rate,
-                    last_observation_ns=self.last_observation_ns, skipped_slots=self.skipped_slots)
+        rate = (
+            (len(stamps) - 1) * 1e9 / (stamps[-1] - stamps[0])
+            if len(stamps) > 1 and stamps[-1] > stamps[0]
+            else None
+        )
+        return {
+            'sample_count': len(stamps),
+            'mean_hz': rate,
+            'last_observation_ns': self.last_observation_ns,
+            'skipped_slots': self.skipped_slots,
+        }

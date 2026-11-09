@@ -12,8 +12,9 @@ class CommandClipCache:
         self._clipped_indices = ()
 
     def apply(self, command, lower, upper):
-        key = tuple((value.shape, value.dtype, value.tobytes())
-                    for value in (command, lower, upper))
+        key = tuple(
+            (value.shape, value.dtype, value.tobytes()) for value in (command, lower, upper)
+        )
         if key != self._key:
             clipped = np.clip(command, lower, upper)
             indices = tuple(np.flatnonzero(np.abs(clipped - command) > 1e-9))

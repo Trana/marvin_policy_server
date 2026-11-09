@@ -2,21 +2,29 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
-spec = importlib.util.spec_from_file_location('guard', Path(__file__).parents[1] / 'scripts/joint_test_capture_guard.py')
+spec = importlib.util.spec_from_file_location(
+    'guard', Path(__file__).parents[1] / 'scripts/joint_test_capture_guard.py'
+)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
 def sample(seq, now):
-    return SimpleNamespace(controller_instance_id='instance', activation_generation=1,
-        joint_names=['joint'], positions=[.2], update_sequence=seq, sampled_at_monotonic_s=now)
+    return SimpleNamespace(
+        controller_instance_id='instance',
+        activation_generation=1,
+        joint_names=['joint'],
+        positions=[0.2],
+        update_sequence=seq,
+        sampled_at_monotonic_s=now,
+    )
 
 
 def primed():
     guard = module.CaptureGuard('instance', 1, ['joint'])
-    for seq, now in [(1, 1.), (2, 1.01)]:
+    for seq, now in [(1, 1.0), (2, 1.01)]:
         assert guard.target(sample(seq, now), now)
-        assert guard.feedback(['joint'], [.2], now)
+        assert guard.feedback(['joint'], [0.2], now)
     return guard
 
 
@@ -39,7 +47,7 @@ def test_live_freshness_is_independent_of_disk_commit():
 def test_live_freshness_uses_target_source_time_not_only_arrival():
     guard = primed()
     guard.target(sample(3, 1.02), 1.16)
-    guard.feedback(['joint'], [.2], 1.16)
+    guard.feedback(['joint'], [0.2], 1.16)
     assert guard.live_ready(1.16)
     assert not guard.live_ready(1.18)
 
@@ -61,5 +69,5 @@ def test_wrong_identity_and_invalid_feedback():
 
 
 def test_stale_and_regressing_source_time():
-    assert not primed().target(sample(3, .8), 1.02)
-    assert not primed().target(sample(3, 1.), 1.02)
+    assert not primed().target(sample(3, 0.8), 1.02)
+    assert not primed().target(sample(3, 1.0), 1.02)

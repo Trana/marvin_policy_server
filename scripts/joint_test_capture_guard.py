@@ -1,15 +1,17 @@
 """No-ROS recording gate for guarded joint tests. Never enables hardware."""
+
 import math
 
 
 class CaptureGuard:
-    """Authorize renewal only after recent samples were persisted successfully.
+    """
+    Authorize renewal only after recent samples were persisted successfully.
 
     The caller must flush its capture before calling committed(). A fault latches
     for this capture. This gate cannot verify a caller's filesystem operations.
     """
 
-    def __init__(self, instance, activation, joints, max_age=.15):
+    def __init__(self, instance, activation, joints, max_age=0.15):
         if not instance or activation <= 0 or not joints or len(set(joints)) != len(joints):
             raise ValueError('Invalid capture identity')
         if not math.isfinite(max_age) or max_age <= 0:
@@ -38,10 +40,10 @@ class CaptureGuard:
         source = sample.sampled_at_monotonic_s
         if not all(math.isfinite(v) for v in [now, source, *sample.positions]):
             return self.reject('INVALID_TARGET')
-        if not 0 <= now-source <= self.max_age:
+        if not 0 <= now - source <= self.max_age:
             return self.reject('STALE_TARGET')
         if self.last_sequence is not None:
-            gap = sample.update_sequence-self.last_sequence-1
+            gap = sample.update_sequence - self.last_sequence - 1
             if gap != 0:
                 self.missing += max(0, gap)
                 return self.reject('TARGET_SEQUENCE_GAP')
@@ -59,7 +61,9 @@ class CaptureGuard:
         if len(names) != len(set(names)) or len(names) != len(positions):
             return self.reject('INVALID_FEEDBACK')
         values = dict(zip(names, positions))
-        if not math.isfinite(now) or any(j not in values or not math.isfinite(values[j]) for j in self.joints):
+        if not math.isfinite(now) or any(
+            j not in values or not math.isfinite(values[j]) for j in self.joints
+        ):
             return self.reject('INVALID_FEEDBACK')
         self.last_feedback = now
         self.feedback_positions = tuple(values[j] for j in self.joints)
@@ -73,11 +77,19 @@ class CaptureGuard:
         return not self.fault
 
     def live_ready(self, now):
-        if self.fault or self.target_count < 2 or self.feedback_count < 2 or not math.isfinite(now):
+        if (
+            self.fault
+            or self.target_count < 2
+            or self.feedback_count < 2
+            or not math.isfinite(now)
+        ):
             return False
         times = (self.last_source, self.last_target, self.last_feedback)
-        return all(t is not None and 0 <= now-t <= self.max_age for t in times)
+        return all(t is not None and 0 <= now - t <= self.max_age for t in times)
 
     def ready(self, now):
-        return (self.live_ready(now) and self.last_commit is not None and
-                0 <= now-self.last_commit <= self.max_age)
+        return (
+            self.live_ready(now)
+            and self.last_commit is not None
+            and 0 <= now - self.last_commit <= self.max_age
+        )

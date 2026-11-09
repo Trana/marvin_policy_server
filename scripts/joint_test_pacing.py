@@ -1,4 +1,5 @@
-"""Wall-time pacing for isolated simulation diagnostics, not robot control.
+"""
+Wall-time pacing for isolated simulation diagnostics, not robot control.
 
 Call after each simulation update with its simulation time and time.monotonic().
 Sleep for the returned duration before the next update. Never change physics dt.
@@ -24,7 +25,8 @@ class SimulationPacer:
         self._failed = False
 
     def wait_seconds(self, simulation_time, wall_time):
-        """Return required wait, rejecting clock resets, large steps and overruns.
+        """
+        Return required wait, rejecting clock resets, large steps and overruns.
 
         Equal simulation stamps are allowed during app updates without physics.
         A failed pacer stays failed: create a new capture to establish new origins.
@@ -40,8 +42,7 @@ class SimulationPacer:
                 raise ValueError('Clock moved backwards')
             if simulation_time - self._last_sim > self._max_step + 1e-12:
                 raise ValueError('Simulation step exceeded pacing bound')
-            ahead = ((simulation_time - self._sim_origin)
-                     - (wall_time - self._wall_origin))
+            ahead = (simulation_time - self._sim_origin) - (wall_time - self._wall_origin)
             if ahead < -self._max_lag - 1e-12:
                 raise ValueError('Simulation fell behind wall time')
         except ValueError:

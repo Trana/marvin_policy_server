@@ -30,11 +30,17 @@ class CompactForwardKinematics(nn.Module):
         if len(lengths) != 1 or not next(iter(lengths)):
             raise ValueError('Compact FK requires equally sized, nonempty motor chains')
         for name, field in [('positions', 0), ('rotations', 1), ('axes', 2)]:
-            self.register_buffer(name, torch.stack([
-                torch.stack([chain[step][field] for chain in chains])
-                for step in range(len(chains[0]))]))
-        self.register_buffer('indices', torch.tensor([
-            [chain[step][3] for chain in chains] for step in range(len(chains[0]))]))
+            self.register_buffer(
+                name,
+                torch.stack([
+                    torch.stack([chain[step][field] for chain in chains])
+                    for step in range(len(chains[0]))
+                ]),
+            )
+        self.register_buffer(
+            'indices',
+            torch.tensor([[chain[step][3] for chain in chains] for step in range(len(chains[0]))]),
+        )
         self.register_buffer('tails', torch.stack(tails))
 
     def forward(self, joints: torch.Tensor) -> torch.Tensor:
@@ -44,10 +50,14 @@ class CompactForwardKinematics(nn.Module):
             angle = joints[:, self.indices[step]].unsqueeze(-1)
             axis = self.axes[step].unsqueeze(0).expand_as(position)
             cosine, sine = torch.cos(angle), torch.sin(angle)
-            rotated = (cosine * position + sine * torch.cross(axis, position, dim=-1)
-                       + (1.0 - cosine) * axis * (axis * position).sum(-1, keepdim=True))
+            rotated = (
+                cosine * position
+                + sine * torch.cross(axis, position, dim=-1)
+                + (1.0 - cosine) * axis * (axis * position).sum(-1, keepdim=True)
+            )
             position = self.positions[step] + (
-                self.rotations[step] @ rotated.unsqueeze(-1)).squeeze(-1)
+                self.rotations[step] @ rotated.unsqueeze(-1)
+            ).squeeze(-1)
         return position
 
 
@@ -68,13 +78,20 @@ class CompactEstimator(nn.Module):
     def actor_estimates(self, history: torch.Tensor):
         joints = history[..., 9:21] + self.default_joint_positions
         feet = self.forward_kinematics(joints.reshape(-1, 12)).reshape(
-            history.shape[0], history.shape[1], 4, 3)
+            history.shape[0], history.shape[1], 4, 3
+        )
         augmented = torch.cat((history, feet.flatten(start_dim=-2)), dim=-1)
         latent = self.encoder((augmented / self.augmented_feature_scale).flatten(start_dim=-2))
-        velocity = torch.clamp(self.velocity_head(latent) * self.velocity_scale,
-                               -self.max_abs_velocity, self.max_abs_velocity)
-        height = torch.clamp(self.foot_height_head(latent) * self.foot_height_scale,
-                             self.min_foot_height, self.max_foot_height)
+        velocity = torch.clamp(
+            self.velocity_head(latent) * self.velocity_scale,
+            -self.max_abs_velocity,
+            self.max_abs_velocity,
+        )
+        height = torch.clamp(
+            self.foot_height_head(latent) * self.foot_height_scale,
+            self.min_foot_height,
+            self.max_foot_height,
+        )
         return velocity, height, torch.sigmoid(self.contact_head(latent)), feet[:, -1]
 
 
@@ -93,7 +110,9 @@ class CompactPolicy(nn.Module):
         velocity, height, contact, feet = self.estimator.actor_estimates(history)
         observation = observation.clone()
         observation[..., :3] = velocity
-        action = self.actor(torch.cat((observation, feet.flatten(start_dim=-2), height, contact), -1))
+        action = self.actor(
+            torch.cat((observation, feet.flatten(start_dim=-2), height, contact), -1)
+        )
         return action, torch.cat((velocity, height, contact), -1), feet
 
 
@@ -106,12 +125,20 @@ def optimize_policy(source, manifest):
     with torch.inference_mode():
         # Include full revolutions, not just the current pose. Do not change global RNG.
         joints = torch.rand(128, 12, generator=generator) * (4 * torch.pi) - 2 * torch.pi
-        torch.testing.assert_close(candidate.estimator.forward_kinematics(joints),
-                                   source.estimator.forward_kinematics(joints), rtol=1e-5, atol=2e-6)
-        for scale in (0., .1, 1., 3.):
-            observation = torch.randn(2, manifest.base_observation_count, generator=generator) * scale
+        torch.testing.assert_close(
+            candidate.estimator.forward_kinematics(joints),
+            source.estimator.forward_kinematics(joints),
+            rtol=1e-5,
+            atol=2e-6,
+        )
+        for scale in (0.0, 0.1, 1.0, 3.0):
+            observation = (
+                torch.randn(2, manifest.base_observation_count, generator=generator) * scale
+            )
             history = torch.randn(2, manifest.history_length, 45, generator=generator) * scale
-            for actual, expected in zip(candidate(observation, history), source(observation, history)):
+            for actual, expected in zip(
+                candidate(observation, history), source(observation, history)
+            ):
                 torch.testing.assert_close(actual, expected, rtol=2e-5, atol=2e-5)
         # Exported TorchScript methods have separate first-call compilation costs.
         # Warm the exact batch-one entry point before motion can be activated.
@@ -122,5 +149,7 @@ def optimize_policy(source, manifest):
         expected_action, expected_state = source(observation, history)
         torch.testing.assert_close(action, expected_action, rtol=2e-5, atol=2e-5)
         torch.testing.assert_close(state, expected_state, rtol=2e-5, atol=2e-5)
-        torch.testing.assert_close(feet, source.estimator.actor_estimates(history)[3], rtol=2e-5, atol=2e-5)
+        torch.testing.assert_close(
+            feet, source.estimator.actor_estimates(history)[3], rtol=2e-5, atol=2e-5
+        )
     return candidate

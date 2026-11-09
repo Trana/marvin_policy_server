@@ -1,19 +1,26 @@
 from types import SimpleNamespace as NS
 
-import pytest
-
 from marvin_policy_server.encoder_snapshot import decode_snapshot
 from marvin_policy_server.input_timing import InputTiming
 from marvin_policy_server.timing import Timing
+import pytest
 
 
 def snapshot():
-    return NS(header=object(), joint_names=['b', 'a'], interface_values=[
-        NS(interface_names=['velocity', 'encoder_receipt_monotonic_s', 'position'],
-           values=[2.0, 0.98, 1.0]),
-        NS(interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
-           values=[3.0, 4.0, 0.99]),
-    ])
+    return NS(
+        header=object(),
+        joint_names=['b', 'a'],
+        interface_values=[
+            NS(
+                interface_names=['velocity', 'encoder_receipt_monotonic_s', 'position'],
+                values=[2.0, 0.98, 1.0],
+            ),
+            NS(
+                interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
+                values=[3.0, 4.0, 0.99],
+            ),
+        ],
+    )
 
 
 def test_values_and_receipts_share_snapshot_and_policy_order():
@@ -52,8 +59,12 @@ def test_age_reuse_and_identity_check():
     inputs.encoder_inference(state)
     inputs.encoder_inference(NS())
     result = timing.snapshot()
-    assert result['distributions_ms']['encoder_oldest_age_at_inference']['mean'] == pytest.approx(20)
-    assert result['distributions_ms']['encoder_receipt_spread_at_inference']['mean'] == pytest.approx(10)
+    assert result['distributions_ms']['encoder_oldest_age_at_inference']['mean'] == pytest.approx(
+        20
+    )
+    assert result['distributions_ms']['encoder_receipt_spread_at_inference'][
+        'mean'
+    ] == pytest.approx(10)
     assert result['counts']['encoder_a_sample_reused'] == 1
     assert result['counts']['encoder_snapshot_mismatch'] == 1
     inputs.reset_interval()
@@ -65,9 +76,9 @@ def test_missing_future_regression_and_off():
     timing = Timing(clock=lambda: 0)
     inputs = InputTiming(timing, clock=lambda: 1_000_000_000)
     state = NS()
-    inputs.received_encoders(state, {'a': .99})
+    inputs.received_encoders(state, {'a': 0.99})
     inputs.encoder_inference(state)
-    inputs.received_encoders(state, {'a': .98, 'b': float('nan'), 'c': 2.0})
+    inputs.received_encoders(state, {'a': 0.98, 'b': float('nan'), 'c': 2.0})
     inputs.encoder_inference(state)
     counts = timing.snapshot()['counts']
     assert counts['encoder_a_receipt_regressed'] == 1
@@ -91,18 +102,24 @@ def test_missing_timestamp_does_not_discard_control_values():
 def test_ros_wire_snapshot_reaches_policy_callback_without_hardware():
     pytest.importorskip('torch')
     pytest.importorskip('rclpy')
-    from control_msgs.msg import DynamicJointState, InterfaceValue
-    from rclpy.serialization import serialize_message, deserialize_message
+    from control_msgs.msg import DynamicJointState
+    from control_msgs.msg import InterfaceValue
     from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
+    from rclpy.serialization import deserialize_message
+    from rclpy.serialization import serialize_message
 
     message = DynamicJointState()
     message.header.stamp.sec = 1
     message.joint_names = ['b', 'a']
     message.interface_values = [
-        InterfaceValue(interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
-                       values=[1.0, 2.0, 0.98]),
-        InterfaceValue(interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
-                       values=[3.0, 4.0, 0.99]),
+        InterfaceValue(
+            interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
+            values=[1.0, 2.0, 0.98],
+        ),
+        InterfaceValue(
+            interface_names=['position', 'velocity', 'encoder_receipt_monotonic_s'],
+            values=[3.0, 4.0, 0.99],
+        ),
     ]
     server = object.__new__(MarvinPolicyServer)
     server.joint_names = ['a', 'b']
@@ -115,7 +132,9 @@ def test_ros_wire_snapshot_reaches_policy_callback_without_hardware():
     assert list(state.position) == [3.0, 1.0]
     server._input_timing.encoder_inference(state)
     result = server._timing.snapshot()
-    assert result['distributions_ms']['encoder_oldest_age_at_inference']['mean'] == pytest.approx(20)
+    assert result['distributions_ms']['encoder_oldest_age_at_inference']['mean'] == pytest.approx(
+        20
+    )
     # No fallback to the earlier valid state after a malformed snapshot.
     decoded.interface_values.pop()
     server._dynamic_joint_state_cb(decoded)

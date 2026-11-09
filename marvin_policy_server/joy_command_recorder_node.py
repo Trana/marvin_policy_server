@@ -30,9 +30,7 @@ class JoyCommandRecorderNode(Node):
             if output_dir
             else Path.home() / '.ros' / 'marvin_joy_recordings'
         )
-        flush_every_samples = int(
-            self.get_parameter('flush_every_samples').value
-        )
+        flush_every_samples = int(self.get_parameter('flush_every_samples').value)
         self._writer = JoyCommandSessionWriter(
             output_root,
             joy_topic=joy_topic,
@@ -44,15 +42,12 @@ class JoyCommandRecorderNode(Node):
             self._joy_callback,
             qos_profile_sensor_data,
         )
-        self.get_logger().info(
-            f'Recording {joy_topic} to {self._writer.session_dir}'
-        )
+        self.get_logger().info(f'Recording {joy_topic} to {self._writer.session_dir}')
 
     def _joy_callback(self, message: Joy) -> None:
         ros_time_sec = self.get_clock().now().nanoseconds * 1.0e-9
         source_stamp_sec = (
-            float(message.header.stamp.sec)
-            + float(message.header.stamp.nanosec) * 1.0e-9
+            float(message.header.stamp.sec) + float(message.header.stamp.nanosec) * 1.0e-9
         )
         self._writer.record(
             axes=message.axes,
@@ -67,8 +62,7 @@ class JoyCommandRecorderNode(Node):
         self._writer.close()
         if rclpy.ok():
             self.get_logger().info(
-                f'Saved {self._writer.sample_count} Joy samples to '
-                f'{self._writer.session_dir}'
+                f'Saved {self._writer.sample_count} Joy samples to {self._writer.session_dir}'
             )
 
 

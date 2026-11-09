@@ -1,7 +1,8 @@
 """One inference in flight, no backlog, and generation-scoped results. No ROS."""
 
 from dataclasses import dataclass
-from threading import Condition, Thread
+from threading import Condition
+from threading import Thread
 import time
 
 
@@ -84,4 +85,6 @@ class InferenceWorker:
             with self._condition:
                 self._busy = False
                 if not self._closed and generation == self._generation:
-                    self._result = InferenceResult(generation, context, value, error, started, finished)
+                    self._result = InferenceResult(
+                        generation, context, value, error, started, finished
+                    )

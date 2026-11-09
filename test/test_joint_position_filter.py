@@ -1,11 +1,7 @@
 """Test optional runtime joint-position filtering."""
 
-from marvin_policy_server.joint_position_filter import (
-    ExponentialJointPositionFilter,
-)
-
+from marvin_policy_server.joint_position_filter import ExponentialJointPositionFilter
 import numpy as np
-
 import pytest
 
 

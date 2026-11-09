@@ -1,32 +1,29 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
-from sensor_msgs.msg import Imu, JointState
-
+from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
 from marvin_policy_server.velocity_estimator import VelocityEstimator
-from marvin_policy_server.velocity_estimator_diagnostics import (
-    FEATURE_NAMES,
-    VelocityEstimatorDiagnosticRecorder,
-)
+from marvin_policy_server.velocity_estimator_diagnostics import FEATURE_NAMES
+from marvin_policy_server.velocity_estimator_diagnostics import VelocityEstimatorDiagnosticRecorder
 from marvin_policy_server.velocity_estimator_features import VelocityEstimatorFeatureBuilder
 from marvin_policy_server.velocity_estimator_shadow import VelocityEstimatorShadowRecorder
-from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
-
+import numpy as np
+from sensor_msgs.msg import Imu
+from sensor_msgs.msg import JointState
 
 JOINT_NAMES = [
-    "FL_hip_joint",
-    "RL_hip_joint",
-    "FR_hip_joint",
-    "RR_hip_joint",
-    "FL_thigh_joint",
-    "RL_thigh_joint",
-    "FR_thigh_joint",
-    "RR_thigh_joint",
-    "FL_calf_joint",
-    "RL_calf_joint",
-    "FR_calf_joint",
-    "RR_calf_joint",
+    'FL_hip_joint',
+    'RL_hip_joint',
+    'FR_hip_joint',
+    'RR_hip_joint',
+    'FL_thigh_joint',
+    'RL_thigh_joint',
+    'FR_thigh_joint',
+    'RR_thigh_joint',
+    'FL_calf_joint',
+    'RL_calf_joint',
+    'FR_calf_joint',
+    'RR_calf_joint',
 ]
 
 
@@ -65,9 +62,7 @@ def test_feature_builder_matches_collection_order() -> None:
 
 def test_feature_builder_can_override_relative_joint_position() -> None:
     """Use one conditioned motor-position signal for estimator and actor."""
-    builder = VelocityEstimatorFeatureBuilder(
-        JOINT_NAMES, np.zeros(12, dtype=np.float64)
-    )
+    builder = VelocityEstimatorFeatureBuilder(JOINT_NAMES, np.zeros(12, dtype=np.float64))
     joint_state = JointState()
     joint_state.name = list(JOINT_NAMES)
     joint_state.position = [9.0] * 12
@@ -106,7 +101,7 @@ def test_feature_builder_can_restore_specific_force_for_isaac_ros() -> None:
 
 
 def test_packaged_estimator_tracks_history_readiness() -> None:
-    checkpoint = Path(__file__).resolve().parents[1] / "policy" / "velocity_estimator.pt"
+    checkpoint = Path(__file__).resolve().parents[1] / 'policy' / 'velocity_estimator.pt'
     estimator = VelocityEstimator(checkpoint)
     frame = np.zeros(estimator.raw_feature_count, dtype=np.float32)
 
@@ -174,18 +169,18 @@ def test_shadow_recorder_separates_history_warmup(tmp_path: Path) -> None:
     summary = recorder.summary()
     recorder.close()
 
-    assert summary["all"]["count"] == 2
-    assert summary["history_ready"]["count"] == 1
-    np.testing.assert_allclose(summary["history_ready"]["rmse_xyz"], [0.1, 0.2, 0.3])
-    assert np.isclose(summary["inference_duration_ms"]["mean"], 0.3)
-    assert np.isclose(summary["inference_duration_ms"]["max"], 0.4)
+    assert summary['all']['count'] == 2
+    assert summary['history_ready']['count'] == 1
+    np.testing.assert_allclose(summary['history_ready']['rmse_xyz'], [0.1, 0.2, 0.3])
+    assert np.isclose(summary['inference_duration_ms']['mean'], 0.3)
+    assert np.isclose(summary['inference_duration_ms']['max'], 0.4)
     assert recorder.log_path is not None
-    assert recorder.log_path.read_text(encoding="utf-8").count("\n") == 3
+    assert recorder.log_path.read_text(encoding='utf-8').count('\n') == 3
 
 
 def test_diagnostic_recorder_aligns_features_and_policy_action(tmp_path: Path) -> None:
     recorder = VelocityEstimatorDiagnosticRecorder(
-        str(tmp_path), joint_names=JOINT_NAMES, velocity_source="odometry"
+        str(tmp_path), joint_names=JOINT_NAMES, velocity_source='odometry'
     )
     recorder.record(
         ros_time_sec=2.0,
@@ -202,14 +197,14 @@ def test_diagnostic_recorder_aligns_features_and_policy_action(tmp_path: Path) -
     )
     recorder.close()
 
-    rows = recorder.log_path.read_text(encoding="utf-8").splitlines()
+    rows = recorder.log_path.read_text(encoding='utf-8').splitlines()
     assert len(FEATURE_NAMES) == 45
     assert len(rows) == 2
-    header = rows[0].split(",")
-    values = rows[1].split(",")
+    header = rows[0].split(',')
+    values = rows[1].split(',')
     assert len(header) == len(values)
-    assert values[header.index("velocity_source")] == "odometry"
-    assert float(values[header.index("joint_state_age_sec")]) == 0.02
-    assert float(values[header.index("imu_accel_x")]) == 0.0
-    assert float(values[header.index("previous_policy_action_11")]) == 44.0
-    assert float(values[header.index(f"policy_action_{JOINT_NAMES[-1]}")]) == 111.0
+    assert values[header.index('velocity_source')] == 'odometry'
+    assert float(values[header.index('joint_state_age_sec')]) == 0.02
+    assert float(values[header.index('imu_accel_x')]) == 0.0
+    assert float(values[header.index('previous_policy_action_11')]) == 44.0
+    assert float(values[header.index(f'policy_action_{JOINT_NAMES[-1]}')]) == 111.0

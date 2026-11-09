@@ -1,10 +1,13 @@
 """Optional lower-overhead ROS endpoints. Parameter services remain available."""
 
 from rclpy.node import Node
+
 try:
-    from rclpy.event_handler import PublisherEventCallbacks, SubscriptionEventCallbacks
+    from rclpy.event_handler import PublisherEventCallbacks
+    from rclpy.event_handler import SubscriptionEventCallbacks
 except ImportError:  # Humble uses the older module name.
-    from rclpy.qos_event import PublisherEventCallbacks, SubscriptionEventCallbacks
+    from rclpy.qos_event import PublisherEventCallbacks
+    from rclpy.qos_event import SubscriptionEventCallbacks
 
 
 class PolicyNode(Node):
@@ -16,8 +19,9 @@ class PolicyNode(Node):
         self._lean_qos_events = bool(self.get_parameter('lean_qos_events').value)
         if self._lean_qos_events:
             self.get_logger().warn(
-                'Lean QoS events enabled: default per-endpoint incompatibility warnings are disabled. '
-                'Sensor freshness checks and parameter services remain enabled.')
+                'Lean QoS events enabled: default per-endpoint incompatibility warnings are'
+                ' disabled. Sensor freshness checks and parameter services remain enabled.'
+            )
 
     def create_publisher(self, *args, **kwargs):
         if self._lean_qos_events and 'event_callbacks' not in kwargs:

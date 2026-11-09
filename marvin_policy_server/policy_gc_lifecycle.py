@@ -1,6 +1,7 @@
 """Bound cyclic garbage collection to inactive native policy windows."""
 
-from enum import Enum, auto
+from enum import auto
+from enum import Enum
 import gc
 
 
@@ -11,7 +12,8 @@ class _WindowState(Enum):
 
 
 class PolicyGcLifecycle:
-    """Suppress automatic cyclic GC while native policy output may be active.
+    """
+    Suppress automatic cyclic GC while native policy output may be active.
 
     Python reference counting remains active. The prior cyclic-GC state is
     restored without collecting only after native output is known to have
@@ -43,8 +45,7 @@ class PolicyGcLifecycle:
 
     def observe_native_state(self, *, active, output_released):
         """Restore after a native status proves that output has stopped."""
-        if (self._state is _WindowState.RESTORE_PENDING and
-                not active and output_released):
+        if self._state is _WindowState.RESTORE_PENDING and not active and output_released:
             self.confirm_output_stopped()
 
     def confirm_output_stopped(self):

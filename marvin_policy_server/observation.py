@@ -1,16 +1,21 @@
-"""Observation construction utilities for Marvin policy server.
+"""
+Observation construction utilities for Marvin policy server.
 
 This module factors out the quaternion conversion and observation vector
 computation originally embedded in `marvin_policy_server.py`.
 Original logic is preserved; only structured into functions/classes.
 """
+
 from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import Sequence, TYPE_CHECKING
+
 import numpy as np
 
 if TYPE_CHECKING:
-    from sensor_msgs.msg import JointState, Imu
+    from sensor_msgs.msg import Imu
+    from sensor_msgs.msg import JointState
 
 
 def quat_to_rot_matrix(quat: np.ndarray) -> np.ndarray:
@@ -56,10 +61,12 @@ class ObservationConfig:
 
 
 class ObservationBuilder:
-    """Create observations from ROS messages or immutable sensor snapshots.
+    """
+    Create observations from ROS messages or immutable sensor snapshots.
 
     The integration of linear acceleration (velocity += acc * dt).
     """
+
     def __init__(self, joint_names: Sequence[str], cfg: ObservationConfig):
         self.joint_names = list(joint_names)
         self.cfg = cfg
@@ -113,10 +120,12 @@ class ObservationBuilder:
         if base_lin_vel_override is not None:
             base_lin_vel = np.asarray(base_lin_vel_override, dtype=np.float64)
             if base_lin_vel.shape != (3,):
-                raise ValueError(f"base_lin_vel_override must have shape (3,), got {base_lin_vel.shape}")
+                raise ValueError(
+                    f'base_lin_vel_override must have shape (3,), got {base_lin_vel.shape}'
+                )
             obs_state.lin_vel_b[:] = base_lin_vel
         elif imu_override is not None:
-            base_lin_vel = np.asarray(imu_override["base_lin_vel"], dtype=np.float64)
+            base_lin_vel = np.asarray(imu_override['base_lin_vel'], dtype=np.float64)
             obs_state.lin_vel_b[:] = base_lin_vel
         else:
             obs_state.lin_vel_b[:] = lin_acc_b * dt + obs_state.lin_vel_b
@@ -136,7 +145,7 @@ class ObservationBuilder:
         #         np.array2string(obs_state.lin_vel_b[mask], precision=6),
         #     )
         # obs_state.lin_vel_b[mask] = 0.0
-       
+
         # obs_state.lin_vel_b[:] = np.array(
         #     [-1.59406548e-04, -2.59802181e-04,  1.87091297e-02],
         #     dtype=np.float64,
@@ -148,7 +157,6 @@ class ObservationBuilder:
         # )
         if obs_state.base_lin_vel_history.shape[0] > 0:
             self._push_history(obs_state.base_lin_vel_history, base_lin_vel)
-        
 
         ang_vel_b = (
             np.array([
@@ -157,9 +165,9 @@ class ObservationBuilder:
                 imu.angular_velocity.z,
             ])
             if imu_override is None
-            else np.asarray(imu_override["base_ang_vel"], dtype=np.float64)
+            else np.asarray(imu_override['base_ang_vel'], dtype=np.float64)
         )
-        # ang_vel_b = np.array([0.0, 0.0, 0.0])        
+        # ang_vel_b = np.array([0.0, 0.0, 0.0])
         # ang_vel_b = np.array([imu.angular_velocity.x,
         #     imu.angular_velocity.y,
         #     0.0,
@@ -168,7 +176,7 @@ class ObservationBuilder:
         gravity_b = (
             np.matmul(R_BI, np.array([0.0, 0.0, -1.0]))
             if imu_override is None
-            else np.asarray(imu_override["projected_gravity"], dtype=np.float64)
+            else np.asarray(imu_override['projected_gravity'], dtype=np.float64)
         )
 
         cmd_vec = (
@@ -178,7 +186,6 @@ class ObservationBuilder:
         )
         # cmd_vec = np.where(np.abs(cmd_vec) < 0.2, 0.0, cmd_vec)
         # cmd_vec = [0.0, 0.0, 0.0]
-
 
         current_joint_pos = np.zeros(len(self.joint_names), dtype=np.float64)
         current_joint_vel = np.zeros(len(self.joint_names), dtype=np.float64)
@@ -191,7 +198,8 @@ class ObservationBuilder:
             override = np.asarray(joint_velocity_override, dtype=np.float64)
             if override.shape != current_joint_vel.shape:
                 raise ValueError(
-                    f"joint_velocity_override shape {override.shape} does not match {current_joint_vel.shape}"
+                    f'joint_velocity_override shape {override.shape} does not match'
+                    f' {current_joint_vel.shape}'
                 )
             current_joint_vel[:] = override
 
@@ -216,8 +224,9 @@ class ObservationBuilder:
         self._push_history(obs_state.joint_pos_history, joint_pos_rel)
         self._push_history(obs_state.joint_vel_history, current_joint_vel)
 
-        obs = np.concatenate(
-            [array.reshape(-1) for array in (
+        obs = np.concatenate([
+            array.reshape(-1)
+            for array in (
                 obs_state.base_lin_vel_history,
                 obs_state.base_ang_vel_history,
                 obs_state.projected_gravity_history,
@@ -225,9 +234,11 @@ class ObservationBuilder:
                 obs_state.joint_pos_history,
                 obs_state.joint_vel_history,
                 obs_state.action_history,
-            ) if array.size > 0]
-        )
+            )
+            if array.size > 0
+        ])
         return obs
+
 
 __all__ = [
     'quat_to_rot_matrix',

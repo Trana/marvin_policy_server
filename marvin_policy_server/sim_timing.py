@@ -1,14 +1,16 @@
 """Simulation-only inference availability. Physical inference never uses this gate."""
+
+from collections import deque
 import json
 import random
-from collections import deque
+
 import numpy as np
 
 
 class SimActionRelease:
-    def __init__(self, profile, initial, seed=42, *, expected_hz=50.):
+    def __init__(self, profile, initial, seed=42, *, expected_hz=50.0):
         self.expected_hz = expected_hz
-        if profile.get('revision') != 'marvin-timing-v1' or profile.get('physics_dt') != .005:
+        if profile.get('revision') != 'marvin-timing-v1' or profile.get('physics_dt') != 0.005:
             raise ValueError('Unsupported simulation timing profile')
         bounds = profile['inference_delay_ms']
         if len(bounds) != 2 or not 0 <= bounds[0] <= bounds[1] <= 20 or any(v % 5 for v in bounds):
@@ -35,7 +37,9 @@ class SimActionRelease:
             self.pending = None
             return False
         if data.get('imu_acceleration_convention') != 'specific_force':
-            self.error = 'Timed scene must declare specific-force IMU acceleration; export the scene again'
+            self.error = (
+                'Timed scene must declare specific-force IMU acceleration; export the scene again'
+            )
             self.pending = None
             return False
         session, stamp = data['session_id'], data['sim_time_ns']
@@ -66,8 +70,9 @@ class SimActionRelease:
         self.last_target = np.array(initial, copy=True)
 
     def observe(self, now, permission):
-        changed = ((self.last_clock is not None and now < self.last_clock) or
-                   (self.permission is not None and permission != self.permission))
+        changed = (self.last_clock is not None and now < self.last_clock) or (
+            self.permission is not None and permission != self.permission
+        )
         self.last_clock, self.permission = now, permission
         if changed:
             self.clear()
@@ -77,8 +82,14 @@ class SimActionRelease:
         if self.pending is not None:
             raise RuntimeError('A simulation inference result is still pending')
         due = observation_ns + self.rng.randint(*self.bounds) * 5_000_000
-        self.pending = (np.array(raw, copy=True), np.array(target, copy=True),
-                        observation_ns, completion_ns, due, trace_id)
+        self.pending = (
+            np.array(raw, copy=True),
+            np.array(target, copy=True),
+            observation_ns,
+            completion_ns,
+            due,
+            trace_id,
+        )
 
     def take(self, now):
         if self.pending is None or now < max(self.pending[3], self.pending[4]):
@@ -87,8 +98,13 @@ class SimActionRelease:
         self.pending = None
         self.last_raw, self.last_target = raw, target
         self.observation_times.append(observation)
-        self.last_release = dict(observation_ns=observation, completion_ns=completion,
-                                 due_ns=due, release_ns=now, trace_id=trace_id)
+        self.last_release = {
+            'observation_ns': observation,
+            'completion_ns': completion,
+            'due_ns': due,
+            'release_ns': now,
+            'trace_id': trace_id,
+        }
         return raw, target, trace_id
 
     def cadence_warning(self, now):
@@ -97,14 +113,19 @@ class SimActionRelease:
         if len(stamps) < 101 or stamps[-1] <= stamps[0]:
             return None
         hz = (len(stamps) - 1) * 1e9 / (stamps[-1] - stamps[0])
-        if hz >= self.expected_hz * .96 or (self.last_cadence_warning is not None and
-                        now - self.last_cadence_warning < 5_000_000_000):
+        if hz >= self.expected_hz * 0.96 or (
+            self.last_cadence_warning is not None
+            and now - self.last_cadence_warning < 5_000_000_000
+        ):
             return None
         self.last_cadence_warning = now
-        return f'Simulation policy cadence is {hz:.1f} Hz; expected {self.expected_hz:.2f} Hz per simulated second'
+        return (
+            f'Simulation policy cadence is {hz:.1f} Hz; expected {self.expected_hz:.2f} Hz per'
+            ' simulated second'
+        )
 
 
-def simulation_gate(profile, initial, *, use_sim_time, native_io, expected_hz=50.):
+def simulation_gate(profile, initial, *, use_sim_time, native_io, expected_hz=50.0):
     if not profile or not use_sim_time:
         return None
     if native_io:

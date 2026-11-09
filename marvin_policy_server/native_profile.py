@@ -1,8 +1,8 @@
 """Explicit native deployment contracts. These checks do not authorize motion."""
 
-MARVIN_JOINTS = tuple(f'{leg}_{axis}_joint'
-                      for axis in ('hip', 'thigh', 'calf')
-                      for leg in ('FL', 'RL', 'FR', 'RR'))
+MARVIN_JOINTS = tuple(
+    f'{leg}_{axis}_joint' for axis in ('hip', 'thigh', 'calf') for leg in ('FL', 'RL', 'FR', 'RR')
+)
 MARVIN_TOPICS = {
     'joint_states_topic': '/joint_states',
     'dynamic_joint_states_topic': '',
@@ -23,18 +23,25 @@ def validate_environment(domain, localhost, profile):
         return
     if profile == 'marvin-v1' and domain == '0':
         return
-    raise ValueError('Native I/O is not enabled for physical robot domains without the explicit marvin-v1 profile')
+    raise ValueError(
+        'Native I/O is not enabled for physical robot domains without the explicit marvin-v1'
+        ' profile'
+    )
 
 
 def validate_profile(domain, profile, namespace, use_sim_time, required, names, topics):
     """Validate resolved names, before the native helper creates publishers."""
     if profile == 'marvin-v1':
         if domain != '0' or namespace != '/' or use_sim_time or not required:
-            raise ValueError('marvin-v1 requires domain 0, root namespace, wall time and operator permission')
+            raise ValueError(
+                'marvin-v1 requires domain 0, root namespace, wall time and operator permission'
+            )
         if tuple(names) != MARVIN_JOINTS:
             raise ValueError('marvin-v1 joint order must match the physical command controller')
         if topics != MARVIN_TOPICS:
-            raise ValueError('marvin-v1 requires the reviewed physical topic names without remapping')
+            raise ValueError(
+                'marvin-v1 requires the reviewed physical topic names without remapping'
+            )
     elif profile == 'test' and domain == '10':
         if namespace != '/sim' or not use_sim_time:
             raise ValueError('Native simulation requires use_sim_time=true and namespace=/sim')

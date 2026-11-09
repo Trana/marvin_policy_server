@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Read recorder status or request a clean stop. Never open its SQLite files."""
+
 import argparse
 import json
 from pathlib import Path
@@ -25,7 +26,9 @@ def control(root, stop=False):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('capture', type=Path)
-    parser.add_argument('--stop', action='store_true', help='Request graceful finalization; does not stop motors')
+    parser.add_argument(
+        '--stop', action='store_true', help='Request graceful finalization; does not stop motors'
+    )
     args = parser.parse_args()
     print(json.dumps(control(args.capture, args.stop), indent=2))
 

@@ -1,12 +1,16 @@
 from types import SimpleNamespace
 
 from marvin_policy_server.input_timing import InputTiming
-from marvin_policy_server.timing import AGE_BOUNDS_MS, Timing
+from marvin_policy_server.timing import AGE_BOUNDS_MS
+from marvin_policy_server.timing import Timing
 
 
 def message(ns):
-    return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(
-        sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)))
+    return SimpleNamespace(
+        header=SimpleNamespace(
+            stamp=SimpleNamespace(sec=ns // 1_000_000_000, nanosec=ns % 1_000_000_000)
+        )
+    )
 
 
 def test_distributions_are_bounded_and_reset_with_window():
@@ -57,8 +61,10 @@ def test_missing_future_and_overridden_inputs_are_explicit():
     inputs.inference(100, {'joint': None}, overridden=['joint'])
     result = timing.snapshot()
     assert result['counts'] == {
-        'joint_header_age_missing': 1, 'joint_receipt_missing': 1,
-        'imu_header_age_invalid': 1, 'imu_receipt_missing': 1,
+        'joint_header_age_missing': 1,
+        'joint_receipt_missing': 1,
+        'imu_header_age_invalid': 1,
+        'imu_receipt_missing': 1,
         'joint_input_overridden': 1,
     }
 

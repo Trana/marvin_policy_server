@@ -1,4 +1,5 @@
-"""Bounded IPC reader for a management-capable policy node.
+"""
+Bounded IPC reader for a management-capable policy node.
 
 Only the ROS executor thread may change policy state. The reader copies packets
 into a small queue and triggers an executor wake-up. Control acknowledgements
@@ -11,10 +12,15 @@ from collections import deque
 from dataclasses import replace
 import json
 import socket
-from threading import Condition, Lock, Thread
+from threading import Condition
+from threading import Lock
+from threading import Thread
 import time
 
-from .native_protocol import Kind, Packet, receive, send, validate_socket
+from .native_protocol import Kind
+from .native_protocol import receive
+from .native_protocol import send
+from .native_protocol import validate_socket
 
 
 class NativeChannel:
@@ -71,12 +77,18 @@ class NativeChannel:
                 self._fail(exc)
                 raise RuntimeError(f'Native policy send failed: {exc}') from exc
 
-    def control(self, packet, *, timeout=.25):
+    def control(self, packet, *, timeout=0.25):
         """Confirm an operation with a matching ACK, or fail the entire channel."""
-        if packet.kind not in {Kind.PREPARE, Kind.CONFIGURE, Kind.ACTIVATE, Kind.DEACTIVATE,
-                               Kind.INVALIDATE, Kind.SHUTDOWN}:
+        if packet.kind not in {
+            Kind.PREPARE,
+            Kind.CONFIGURE,
+            Kind.ACTIVATE,
+            Kind.DEACTIVATE,
+            Kind.INVALIDATE,
+            Kind.SHUTDOWN,
+        }:
             raise ValueError('Packet is not a native control operation')
-        if not 0 < timeout <= 5.:
+        if not 0 < timeout <= 5.0:
             raise ValueError('Control timeout must be in (0,5] seconds')
         with self._control_lock:
             with self._condition:
@@ -102,7 +114,7 @@ class NativeChannel:
                 return ack
 
     def drain(self):
-        """Called by the executor, never by the reader thread."""
+        """Drain packets in the executor, never in the reader thread."""
         with self._condition:
             self._check()
             packets = tuple(self._packets)
@@ -126,24 +138,36 @@ class NativeChannel:
                     # ordering remains intact. ACKs use the separate path above.
                     if packet.kind == Kind.STATUS:
                         self._packets = deque(
-                            item for item in self._packets if item.kind != Kind.STATUS)
+                            item for item in self._packets if item.kind != Kind.STATUS
+                        )
                     work_count = sum(item.kind != Kind.STATUS for item in self._packets)
                     if packet.kind != Kind.STATUS and work_count >= self._limit:
                         # Format only on failure. Source age includes transport time,
                         # not just time spent in this Python queue.
                         now = time.monotonic_ns()
+
                         def describe(item):
                             return {
-                                'kind': item.kind.name, 'sequence': item.sequence,
-                                'generation': item.generation, 'flags': int(item.flags),
-                                'source_age_ms': (now - item.requested_ns) / 1e6
-                                if 0 < item.requested_ns <= now else None,
+                                'kind': item.kind.name,
+                                'sequence': item.sequence,
+                                'generation': item.generation,
+                                'flags': int(item.flags),
+                                'source_age_ms': (
+                                    (now - item.requested_ns) / 1e6
+                                    if 0 < item.requested_ns <= now
+                                    else None
+                                ),
                             }
-                        detail = {'limit': self._limit,
-                                  'queued': [describe(item) for item in self._packets],
-                                  'incoming': describe(packet)}
-                        raise RuntimeError('Native input queue exceeded its bounded capacity: ' +
-                                           json.dumps(detail, separators=(',', ':')))
+
+                        detail = {
+                            'limit': self._limit,
+                            'queued': [describe(item) for item in self._packets],
+                            'incoming': describe(packet),
+                        }
+                        raise RuntimeError(
+                            'Native input queue exceeded its bounded capacity: '
+                            + json.dumps(detail, separators=(',', ':'))
+                        )
                     self._packets.append(packet)
                 self._wake()
         except Exception as exc:
@@ -158,6 +182,6 @@ class NativeChannel:
             self._connection.shutdown(socket.SHUT_RDWR)
         except OSError:
             pass
-        self._thread.join(timeout=1.)
+        self._thread.join(timeout=1.0)
         self._connection.close()
         return not self._thread.is_alive()

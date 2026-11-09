@@ -6,12 +6,13 @@ from types import SimpleNamespace
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    'probe', Path(__file__).parents[1] / 'scripts/prepare_sim_delay_probe.py')
+    'probe', Path(__file__).parents[1] / 'scripts/prepare_sim_delay_probe.py'
+)
 probe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(probe)
 
 
-SOURCE = '''import collections
+SOURCE = """import collections
 def setup(db):
     db.internal_state.buffer = collections.deque()
 def compute(db):
@@ -25,21 +26,23 @@ def compute(db):
         else:
             db.outputs.delayed_position_command = list(current_val)
     return True
-'''
+"""
 
 
 def test_wrapper_keeps_targets_and_measures_buffer_age(capsys):
     env = {}
     exec(probe.instrument(SOURCE), env)
-    clock = SimpleNamespace(monotonic=lambda: clock.value, value=0.)
+    clock = SimpleNamespace(monotonic=lambda: clock.value, value=0.0)
     env['_probe_time'] = clock
-    db = SimpleNamespace(internal_state=SimpleNamespace(), inputs=SimpleNamespace(), outputs=SimpleNamespace())
+    db = SimpleNamespace(
+        internal_state=SimpleNamespace(), inputs=SimpleNamespace(), outputs=SimpleNamespace()
+    )
     env['setup'](db)
     actual = []
     for index in range(30):
-        clock.value = index * .1
+        clock.value = index * 0.1
         db.inputs.positionCommand = [index]
-        db.inputs.probeSimulationTime = index * .005
+        db.inputs.probeSimulationTime = index * 0.005
         assert env['compute'](db)
         actual.append(db.outputs.delayed_position_command[0])
     assert actual == list(range(6)) + list(range(24))
@@ -51,12 +54,12 @@ def test_wrapper_keeps_targets_and_measures_buffer_age(capsys):
     assert data['passthrough_count'] == 6
     assert data['buffer_sim_age_mean_ms'] == pytest.approx(30)
     assert data['callback_sim_hz'] == pytest.approx(200)
-    assert data['real_time_factor'] == pytest.approx(.05)
-    assert data['window_start_monotonic_s'] == 0.
+    assert data['real_time_factor'] == pytest.approx(0.05)
+    assert data['window_start_monotonic_s'] == 0.0
     assert data['window_end_monotonic_s'] == pytest.approx(2.9)
-    assert data['window_start_sim_s'] == 0.
-    assert data['window_end_sim_s'] == pytest.approx(.145)
-    assert data['oldest_buffered_input_sim_s'] == pytest.approx(0.)
+    assert data['window_start_sim_s'] == 0.0
+    assert data['window_end_sim_s'] == pytest.approx(0.145)
+    assert data['oldest_buffered_input_sim_s'] == pytest.approx(0.0)
 
 
 def test_unknown_source_refused():
@@ -67,8 +70,11 @@ def test_unknown_source_refused():
 def test_missing_clock_is_not_reported_as_zero_delay(capsys):
     env = {}
     exec(probe.instrument(SOURCE), env)
-    db = SimpleNamespace(internal_state=SimpleNamespace(),
-                         inputs=SimpleNamespace(positionCommand=[1.]), outputs=SimpleNamespace())
+    db = SimpleNamespace(
+        internal_state=SimpleNamespace(),
+        inputs=SimpleNamespace(positionCommand=[1.0]),
+        outputs=SimpleNamespace(),
+    )
     env['setup'](db)
     for _ in range(30):
         env['compute'](db)

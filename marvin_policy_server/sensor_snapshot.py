@@ -1,4 +1,5 @@
-"""Immutable sensor values for policy computation without a ROS dependency.
+"""
+Immutable sensor values for policy computation without a ROS dependency.
 
 The field names match the numeric builders' existing message interface. Transport
 code validates freshness and ownership separately. A snapshot is not permission
@@ -76,12 +77,15 @@ class SensorSnapshot:
             raise ValueError('Sensor values have an invalid size or non-finite value')
         offset = 2 * count
         return cls(
-            JointSample(Header(Stamp.from_ns(joint_stamp_ns)), names,
-                        data[:count], data[count:offset]),
-            ImuSample(Header(Stamp.from_ns(imu_stamp_ns)),
-                      Quaternion(*data[offset:offset + 4]),
-                      Vector3(*data[offset + 4:offset + 7]),
-                      Vector3(*data[offset + 7:offset + 10])),
+            JointSample(
+                Header(Stamp.from_ns(joint_stamp_ns)), names, data[:count], data[count:offset]
+            ),
+            ImuSample(
+                Header(Stamp.from_ns(imu_stamp_ns)),
+                Quaternion(*data[offset: offset + 4]),
+                Vector3(*data[offset + 4: offset + 7]),
+                Vector3(*data[offset + 7: offset + 10]),
+            ),
         )
 
     @classmethod
@@ -97,7 +101,13 @@ class SensorSnapshot:
         except (KeyError, IndexError) as exc:
             raise ValueError('Joint message is missing required positions or velocities') from exc
         q, w, a = imu.orientation, imu.angular_velocity, imu.linear_acceleration
-        stamp = lambda m: int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec)
-        return cls.from_values(names, stamp(joint), stamp(imu),
-                               positions + velocities +
-                               [q.x, q.y, q.z, q.w, w.x, w.y, w.z, a.x, a.y, a.z])
+
+        def stamp(m):
+            return int(m.header.stamp.sec) * 1_000_000_000 + int(m.header.stamp.nanosec)
+
+        return cls.from_values(
+            names,
+            stamp(joint),
+            stamp(imu),
+            positions + velocities + [q.x, q.y, q.z, q.w, w.x, w.y, w.z, a.x, a.y, a.z],
+        )

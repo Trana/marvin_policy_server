@@ -2,16 +2,16 @@
 """Measure delay from a commanded step to first observed motion."""
 
 import csv
-import time
 from dataclasses import dataclass
-from typing import List, Optional
+import time
+from typing import List
 
+from marvin_trace_msgs.msg import TracedFloat64MultiArray
 import numpy as np
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float64MultiArray
-from marvin_trace_msgs.msg import TracedFloat64MultiArray
 
 
 @dataclass
@@ -27,107 +27,112 @@ class StepResult:
 
 
 class DelayTestNode(Node):
-    """Measures first response after a command change.
+    """
+    Measures first response after a command change.
 
     This assumes commands and joint_states are on the SAME machine. If commands
     are coming from another computer, you must embed timestamps in the command
-    or use ROS headers.    
+    or use ROS headers.
 
-    Ros2 command example:
-    ros2 run marvin_policy_server marvin_delay_test --ros-args -p joint_names_csv:="FL_hip_joint,RL_hip_joint,FR_hip_joint,RR_hip_joint,FL_thigh_joint,RL_thigh_joint,FR_thigh_joint,RR_thigh_joint,FL_calf_joint,RL_calf_joint,FR_calf_joint,RR_calf_joint"   -p target_joints_csv:="FL_thigh_joint,RL_thigh_joint,FR_thigh_joint,RR_thigh_joint,FL_calf_joint,RL_calf_joint,FR_calf_joint,RR_calf_joint"
+    Select the measured joints with the joint_names_csv parameter and the
+    commanded joints with target_joints_csv. Both parameters accept a
+    comma-separated list of joint names.
     """
 
     def __init__(self) -> None:
-        super().__init__("marvin_delay_test")
+        super().__init__('marvin_delay_test')
 
-        self.declare_parameter("command_topic", "marvin_joint_controller/commands")
-        self.declare_parameter("traced_command_topic", "marvin_joint_controller/commands_traced")
-        self.declare_parameter("publish_legacy_commands", True)
-        self.declare_parameter("publish_traced_commands", True)
-        self.declare_parameter("joint_states_topic", "/joint_states")
-        self.declare_parameter("joint_names", [""])
-        self.declare_parameter("joint_names_csv", "")
-        self.declare_parameter("target_joint", "")
-        self.declare_parameter("target_joints", [""])
-        self.declare_parameter("target_joints_csv", "")
-        self.declare_parameter("period_s", 1.0)
-        self.declare_parameter("value_a", 0.0)
-        self.declare_parameter("value_b", 0.3)
-        self.declare_parameter("num_steps", 60)
-        self.declare_parameter("use_velocity", True)
-        self.declare_parameter("vel_threshold", 0.02)
-        self.declare_parameter("pos_threshold", 0.002)
-        self.declare_parameter("consecutive_samples", 2)
-        self.declare_parameter("publish_rate_hz", 200.0)
-        self.declare_parameter("motion_timeout_s", 2.0)
-        self.declare_parameter("warmup_samples", 10)
-        self.declare_parameter("csv_path", "")
+        self.declare_parameter('command_topic', 'marvin_joint_controller/commands')
+        self.declare_parameter('traced_command_topic', 'marvin_joint_controller/commands_traced')
+        self.declare_parameter('publish_legacy_commands', True)
+        self.declare_parameter('publish_traced_commands', True)
+        self.declare_parameter('joint_states_topic', '/joint_states')
+        self.declare_parameter('joint_names', [''])
+        self.declare_parameter('joint_names_csv', '')
+        self.declare_parameter('target_joint', '')
+        self.declare_parameter('target_joints', [''])
+        self.declare_parameter('target_joints_csv', '')
+        self.declare_parameter('period_s', 1.0)
+        self.declare_parameter('value_a', 0.0)
+        self.declare_parameter('value_b', 0.3)
+        self.declare_parameter('num_steps', 60)
+        self.declare_parameter('use_velocity', True)
+        self.declare_parameter('vel_threshold', 0.02)
+        self.declare_parameter('pos_threshold', 0.002)
+        self.declare_parameter('consecutive_samples', 2)
+        self.declare_parameter('publish_rate_hz', 200.0)
+        self.declare_parameter('motion_timeout_s', 2.0)
+        self.declare_parameter('warmup_samples', 10)
+        self.declare_parameter('csv_path', '')
 
-        self.command_topic = self.get_parameter("command_topic").value
-        self.traced_command_topic = self.get_parameter("traced_command_topic").value
-        self.publish_legacy_commands = bool(self.get_parameter("publish_legacy_commands").value)
-        self.publish_traced_commands = bool(self.get_parameter("publish_traced_commands").value)
-        self.joint_states_topic = self.get_parameter("joint_states_topic").value
+        self.command_topic = self.get_parameter('command_topic').value
+        self.traced_command_topic = self.get_parameter('traced_command_topic').value
+        self.publish_legacy_commands = bool(self.get_parameter('publish_legacy_commands').value)
+        self.publish_traced_commands = bool(self.get_parameter('publish_traced_commands').value)
+        self.joint_states_topic = self.get_parameter('joint_states_topic').value
         if not self.publish_legacy_commands and not self.publish_traced_commands:
             self.get_logger().warn(
-                "Both publish_legacy_commands and publish_traced_commands are false. Enabling legacy publishing."
+                'Both publish_legacy_commands and publish_traced_commands are false. Enabling'
+                ' legacy publishing.'
             )
             self.publish_legacy_commands = True
-        raw_joint_names = list(self.get_parameter("joint_names").value)
-        joint_names_csv = self.get_parameter("joint_names_csv").value.strip()
+        raw_joint_names = list(self.get_parameter('joint_names').value)
+        joint_names_csv = self.get_parameter('joint_names_csv').value.strip()
         if joint_names_csv:
-            self.joint_names = [name.strip() for name in joint_names_csv.split(",") if name.strip()]
+            self.joint_names = [
+                name.strip() for name in joint_names_csv.split(',') if name.strip()
+            ]
         else:
             self.joint_names = [name for name in raw_joint_names if name]
-        self.target_joint = self.get_parameter("target_joint").value.strip()
-        raw_target_joints = list(self.get_parameter("target_joints").value)
-        target_joints_csv = self.get_parameter("target_joints_csv").value.strip()
-        self.period_s = float(self.get_parameter("period_s").value)
-        self.value_a = float(self.get_parameter("value_a").value)
-        self.value_b = float(self.get_parameter("value_b").value)
-        self.num_steps = int(self.get_parameter("num_steps").value)
-        self.use_velocity = bool(self.get_parameter("use_velocity").value)
-        self.vel_threshold = float(self.get_parameter("vel_threshold").value)
-        self.pos_threshold = float(self.get_parameter("pos_threshold").value)
-        self.consecutive_samples = int(self.get_parameter("consecutive_samples").value)
-        self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
-        self.motion_timeout_s = float(self.get_parameter("motion_timeout_s").value)
-        self.warmup_samples = int(self.get_parameter("warmup_samples").value)
-        self.csv_path = self.get_parameter("csv_path").value.strip()
+        self.target_joint = self.get_parameter('target_joint').value.strip()
+        raw_target_joints = list(self.get_parameter('target_joints').value)
+        target_joints_csv = self.get_parameter('target_joints_csv').value.strip()
+        self.period_s = float(self.get_parameter('period_s').value)
+        self.value_a = float(self.get_parameter('value_a').value)
+        self.value_b = float(self.get_parameter('value_b').value)
+        self.num_steps = int(self.get_parameter('num_steps').value)
+        self.use_velocity = bool(self.get_parameter('use_velocity').value)
+        self.vel_threshold = float(self.get_parameter('vel_threshold').value)
+        self.pos_threshold = float(self.get_parameter('pos_threshold').value)
+        self.consecutive_samples = int(self.get_parameter('consecutive_samples').value)
+        self.publish_rate_hz = float(self.get_parameter('publish_rate_hz').value)
+        self.motion_timeout_s = float(self.get_parameter('motion_timeout_s').value)
+        self.warmup_samples = int(self.get_parameter('warmup_samples').value)
+        self.csv_path = self.get_parameter('csv_path').value.strip()
 
         if not self.joint_names:
             raise RuntimeError(
-                "Set joint_names (string array) or joint_names_csv (comma-separated list)."
+                'Set joint_names (string array) or joint_names_csv (comma-separated list).'
             )
         if target_joints_csv:
             self.target_joints = [
-                name.strip() for name in target_joints_csv.split(",") if name.strip()
+                name.strip() for name in target_joints_csv.split(',') if name.strip()
             ]
         else:
             self.target_joints = [name for name in raw_target_joints if name]
         if not self.target_joints and self.target_joint:
             self.target_joints = [self.target_joint]
         if not self.target_joints:
-            raise RuntimeError(
-                "Set target_joint or target_joints/target_joints_csv."
-            )
+            raise RuntimeError('Set target_joint or target_joints/target_joints_csv.')
 
         self.target_indices = {}
         for name in self.target_joints:
             try:
                 self.target_indices[name] = self.joint_names.index(name)
             except ValueError as exc:
-                raise RuntimeError(
-                    f"target_joint '{name}' not found in joint_names"
-                ) from exc
+                raise RuntimeError(f"target_joint '{name}' not found in joint_names") from exc
 
         self.cmd_pub = None
         self.cmd_pub_traced = None
         if self.publish_legacy_commands:
             self.cmd_pub = self.create_publisher(Float64MultiArray, self.command_topic, 10)
         if self.publish_traced_commands:
-            self.cmd_pub_traced = self.create_publisher(TracedFloat64MultiArray, self.traced_command_topic, 10)
-        self.js_sub = self.create_subscription(JointState, self.joint_states_topic, self.on_joint_state, 50)
+            self.cmd_pub_traced = self.create_publisher(
+                TracedFloat64MultiArray, self.traced_command_topic, 10
+            )
+        self.js_sub = self.create_subscription(
+            JointState, self.joint_states_topic, self.on_joint_state, 50
+        )
         self.trace_id = 0
 
         self.current_cmd = self.value_a
@@ -147,10 +152,10 @@ class DelayTestNode(Node):
         self.pub_timer = self.create_timer(publish_dt, self.publish_command_stream)
 
         self.get_logger().info(
-            f"Delay test starting (command_topic={self.command_topic}, "
-            f"traced_command_topic={self.traced_command_topic}, "
-            f"joint_states_topic={self.joint_states_topic}, "
-            f"target_joints={self.target_joints})"
+            f'Delay test starting (command_topic={self.command_topic}, '
+            f'traced_command_topic={self.traced_command_topic}, '
+            f'joint_states_topic={self.joint_states_topic}, '
+            f'target_joints={self.target_joints})'
         )
 
     def publish_command_stream(self) -> None:
@@ -170,7 +175,7 @@ class DelayTestNode(Node):
 
             self.step_idx += 1
             self.get_logger().info(
-                f"[step {self.step_idx}/{self.num_steps}] cmd -> {self.current_cmd:.4f} rad"
+                f'[step {self.step_idx}/{self.num_steps}] cmd -> {self.current_cmd:.4f} rad'
             )
 
         command_values = [0.0] * len(self.joint_names)
@@ -197,14 +202,14 @@ class DelayTestNode(Node):
                     joint_name=name,
                     cmd_value=self.cmd_value_for_step,
                     t_cmd=self.t_cmd,
-                    t_move=float("nan"),
-                    delay_s=float("nan"),
+                    t_move=float('nan'),
+                    delay_s=float('nan'),
                     peak_abs_vel=self.peak_abs_vel.get(name, 0.0),
-                    method="timeout",
+                    method='timeout',
                 )
                 self.results.append(res)
                 self.done[name] = True
-                self.get_logger().warn(f"  -> {name}: timeout after {self.motion_timeout_s:.2f}s")
+                self.get_logger().warn(f'  -> {name}: timeout after {self.motion_timeout_s:.2f}s')
             self.pending = False
 
         if self.step_idx >= self.num_steps and not self.pending:
@@ -215,7 +220,9 @@ class DelayTestNode(Node):
             return
 
         t_sample = time.monotonic()
-        name_to_index = {name: msg.name.index(name) for name in self.target_joints if name in msg.name}
+        name_to_index = {
+            name: msg.name.index(name) for name in self.target_joints if name in msg.name
+        }
         for name in self.target_joints:
             if self.done.get(name):
                 continue
@@ -235,12 +242,12 @@ class DelayTestNode(Node):
                 self.peak_abs_vel[name] = max(self.peak_abs_vel[name], abs(dq))
 
             moved = False
-            method = "vel"
+            method = 'vel'
             if self.use_velocity and dq is not None:
                 if abs(dq) >= self.vel_threshold:
                     moved = True
             else:
-                method = "pos"
+                method = 'pos'
                 if abs(q - (self.q_at_cmd.get(name) or 0.0)) >= self.pos_threshold:
                     moved = True
 
@@ -267,8 +274,8 @@ class DelayTestNode(Node):
                 self.done[name] = True
 
                 self.get_logger().info(
-                    f"  -> {name}: delay={delay_s * 1000.0:.1f} ms "
-                    f"(peak|dq|={self.peak_abs_vel[name]:.3f}, method={method})"
+                    f'  -> {name}: delay={delay_s * 1000.0:.1f} ms '
+                    f'(peak|dq|={self.peak_abs_vel[name]:.3f}, method={method})'
                 )
 
         if self.pending and all(self.done.get(name, False) for name in self.target_joints):
@@ -277,7 +284,8 @@ class DelayTestNode(Node):
     def summarize_and_exit(self) -> None:
         if not self.results:
             self.get_logger().error(
-                "No results collected. Check target_joint, topics, thresholds, and that the joint moves."
+                'No results collected. Check target_joint, topics, thresholds, and that the joint'
+                ' moves.'
             )
             rclpy.shutdown()
             return
@@ -285,65 +293,63 @@ class DelayTestNode(Node):
         usable = [r for r in self.results if r.step_idx > self.warmup_samples]
         if not usable:
             self.get_logger().error(
-                f"Not enough samples after warmup steps ({self.warmup_samples})."
+                f'Not enough samples after warmup steps ({self.warmup_samples}).'
             )
             rclpy.shutdown()
             return
 
-        self.get_logger().info("===== Delay summary (command -> motion) =====")
+        self.get_logger().info('===== Delay summary (command -> motion) =====')
         self.get_logger().info(
-            f"samples: {len(usable)} (warmup steps skipped: {self.warmup_samples})"
+            f'samples: {len(usable)} (warmup steps skipped: {self.warmup_samples})'
         )
         for name in self.target_joints:
             joint_samples = [r for r in usable if r.joint_name == name and np.isfinite(r.delay_s)]
             if not joint_samples:
-                self.get_logger().info(f"{name}: no samples")
+                self.get_logger().info(f'{name}: no samples')
                 continue
             delays_ms = np.array([r.delay_s * 1000.0 for r in joint_samples], dtype=float)
             self.get_logger().info(
-                f"{name}: n={len(delays_ms)} min={float(np.min(delays_ms)):.1f} "
-                f"mean={float(np.mean(delays_ms)):.1f} p50={float(np.percentile(delays_ms, 50)):.1f} "
-                f"p90={float(np.percentile(delays_ms, 90)):.1f} p95={float(np.percentile(delays_ms, 95)):.1f} "
-                f"max={float(np.max(delays_ms)):.1f}"
+                f'{name}: n={len(delays_ms)} min={float(np.min(delays_ms)):.1f} '
+                f'mean={float(np.mean(delays_ms)):.1f} '
+                f'p50={float(np.percentile(delays_ms, 50)):.1f} '
+                f'p90={float(np.percentile(delays_ms, 90)):.1f} '
+                f'p95={float(np.percentile(delays_ms, 95)):.1f} '
+                f'max={float(np.max(delays_ms)):.1f}'
             )
-        self.get_logger().info("============================================")
+        self.get_logger().info('============================================')
 
         if self.csv_path:
             self.write_csv(self.csv_path)
-            self.get_logger().info(f"Wrote CSV: {self.csv_path}")
+            self.get_logger().info(f'Wrote CSV: {self.csv_path}')
 
         rclpy.shutdown()
 
     def write_csv(self, path: str) -> None:
-        with open(path, "w", newline="") as handle:
+        with open(path, 'w', newline='') as handle:
             writer = csv.writer(handle)
-            writer.writerow(
-                [
-                    "step_idx",
-                    "joint_name",
-                    "cmd_value",
-                    "t_cmd_monotonic_s",
-                    "t_move_monotonic_s",
-                    "delay_s",
-                    "delay_ms",
-                    "peak_abs_vel",
-                    "method",
-                ]
-            )
+            writer.writerow([
+                'step_idx',
+                'joint_name',
+                'cmd_value',
+                't_cmd_monotonic_s',
+                't_move_monotonic_s',
+                'delay_s',
+                'delay_ms',
+                'peak_abs_vel',
+                'method',
+            ])
             for r in self.results:
-                writer.writerow(
-                    [
-                        r.step_idx,
-                        r.joint_name,
-                        r.cmd_value,
-                        r.t_cmd,
-                        r.t_move,
-                        r.delay_s,
-                        r.delay_s * 1000.0,
-                        r.peak_abs_vel,
-                        r.method,
-                    ]
-                )
+                writer.writerow([
+                    r.step_idx,
+                    r.joint_name,
+                    r.cmd_value,
+                    r.t_cmd,
+                    r.t_move,
+                    r.delay_s,
+                    r.delay_s * 1000.0,
+                    r.peak_abs_vel,
+                    r.method,
+                ])
 
 
 def main() -> None:

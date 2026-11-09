@@ -1,4 +1,5 @@
-"""Private-domain status callback timing and short-lived monitoring clients.
+"""
+Private-domain status callback timing and short-lived monitoring clients.
 
 This is a test helper, not a production entry point. It never enables hardware.
 """
@@ -16,6 +17,7 @@ def main():
     if mode == 'server':
         from marvin_policy_server import native_server
         from marvin_policy_server.marvin_policy_server import MarvinPolicyServer
+
         original = MarvinPolicyServer._get_policy_observations_cb
         samples = []
 
@@ -25,9 +27,11 @@ def main():
                 return original(self, request, response)
             finally:
                 if len(samples) < 1000:
-                    samples.append({'monotonic_ns': wall,
-                                    'elapsed_ms': (time.monotonic_ns() - wall) / 1e6,
-                                    'cpu_ms': (time.thread_time_ns() - cpu) / 1e6})
+                    samples.append({
+                        'monotonic_ns': wall,
+                        'elapsed_ms': (time.monotonic_ns() - wall) / 1e6,
+                        'cpu_ms': (time.thread_time_ns() - cpu) / 1e6,
+                    })
 
         MarvinPolicyServer._get_policy_observations_cb = measured
         try:
@@ -40,20 +44,28 @@ def main():
     started = time.monotonic()
     import rclpy
     from std_srvs.srv import Trigger
+
     rclpy.init(args=[])
     node = rclpy.create_node('private_short_lived_monitor')
     try:
         client = node.create_client(Trigger, '/get_policy_observations')
-        if not client.wait_for_service(timeout_sec=3.):
+        if not client.wait_for_service(timeout_sec=3.0):
             raise RuntimeError('Private policy service not discovered')
         ready = time.monotonic()
         if mode == 'fresh':
             future = client.call_async(Trigger.Request())
-            rclpy.spin_until_future_complete(node, future, timeout_sec=2.)
+            rclpy.spin_until_future_complete(node, future, timeout_sec=2.0)
             if not future.done() or not future.result().success:
                 raise RuntimeError('Private status query failed')
-        print('MONITOR_CLIENT ' + json.dumps({'mode': mode, 'startup_discovery_ms': (ready - started) * 1000,
-                                            'query_ms': (time.monotonic() - ready) * 1000}), flush=True)
+        print(
+            'MONITOR_CLIENT '
+            + json.dumps({
+                'mode': mode,
+                'startup_discovery_ms': (ready - started) * 1000,
+                'query_ms': (time.monotonic() - ready) * 1000,
+            }),
+            flush=True,
+        )
     finally:
         node.destroy_node()
         rclpy.shutdown()

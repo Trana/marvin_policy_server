@@ -1,6 +1,7 @@
 """Concurrent state-estimator policy deployment support."""
 
-from .manifest import ConcurrentPolicyManifest, load_concurrent_policy_manifest
+from .manifest import ConcurrentPolicyManifest
+from .manifest import load_concurrent_policy_manifest
 from .runner import ConcurrentPolicyRunner
 
 __all__ = [

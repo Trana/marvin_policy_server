@@ -9,15 +9,21 @@ DROP_IN_NAME = 'zzzzz-native-policy.conf'
 
 def deployment_path(value):
     path = Path(value)
-    if (not re.fullmatch(r'/home/mikael/Development/[A-Za-z0-9_./-]+', str(path))
-            or '..' in path.parts or '%' in str(path)):
-        raise ValueError('Use an absolute deployment path under /home/mikael/Development without shell or systemd substitutions')
+    if (
+        not re.fullmatch(r'/home/mikael/Development/[A-Za-z0-9_./-]+', str(path))
+        or '..' in path.parts
+        or '%' in str(path)
+    ):
+        raise ValueError(
+            'Use an absolute deployment path under /home/mikael/Development without shell or'
+            ' systemd substitutions'
+        )
     return path
 
 
 def render(setup, runner):
     setup, runner = deployment_path(setup), deployment_path(runner)
-    return f'''# Prepared only. Installation requires supervised physical acceptance.
+    return (f"""# Prepared only. Installation requires supervised physical acceptance.
 # Remove only this drop-in to restore the preceding Python deployment.
 [Service]
 Environment=MARVIN_POLICY_IO_BACKEND=native
@@ -27,8 +33,10 @@ Environment=MARVIN_POLICY_COMPACT_ESTIMATOR=true
 Environment=MARVIN_POLICY_LEAN_QOS_EVENTS=true
 Environment=MARVIN_POLICY_INFERENCE_MAX_AGE_MS=100.0
 ExecStart=
-ExecStart=/usr/bin/env ROBOT_CONTROL_WORKSPACE_SETUP={setup} ROBOT_RUNTIME_LOCALHOST_ONLY=1 ROBOT_RUNTIME_OPERATOR_INPUT_REQUIRED=true ROS_DOMAIN_ID=0 /bin/bash {runner}
-'''
+"""
+            f'ExecStart=/usr/bin/env ROBOT_CONTROL_WORKSPACE_SETUP={setup} '
+            'ROBOT_RUNTIME_LOCALHOST_ONLY=1 ROBOT_RUNTIME_OPERATOR_INPUT_REQUIRED=true '
+            f'ROS_DOMAIN_ID=0 /bin/bash {runner}\n')
 
 
 def main():
@@ -48,7 +56,9 @@ def main():
         parser.error('The staged native helper is missing')
     output_dir = deployment_path(args.output_directory)
     # Do not permit this preparation tool to write into an active configuration directory.
-    if output_dir.resolve() != output_dir or not output_dir.is_relative_to(args.setup.parent.parent):
+    if output_dir.resolve() != output_dir or not output_dir.is_relative_to(
+        args.setup.parent.parent
+    ):
         parser.error('Output must be a real directory inside the staged workspace')
     output_dir.mkdir(parents=True, exist_ok=True)
     output = output_dir / DROP_IN_NAME

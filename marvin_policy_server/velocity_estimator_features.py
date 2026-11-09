@@ -6,6 +6,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import numpy as np
+
 if TYPE_CHECKING:
     from sensor_msgs.msg import Imu, JointState
 
@@ -34,7 +35,7 @@ class VelocityEstimatorFeatureBuilder:
         if len(self.joint_names) != 12 or self.default_positions.shape != (12,):
             raise ValueError("The baseline velocity estimator requires Marvin's 12 motor joints")
         if not np.isfinite(self.gravity_magnitude) or self.gravity_magnitude <= 0.0:
-            raise ValueError("gravity_magnitude must be finite and greater than zero")
+            raise ValueError('gravity_magnitude must be finite and greater than zero')
 
     def build(
         self,
@@ -46,14 +47,18 @@ class VelocityEstimatorFeatureBuilder:
         name_to_index = {name: index for index, name in enumerate(joint_state.name)}
         missing = [name for name in self.joint_names if name not in name_to_index]
         if missing:
-            raise ValueError(f"JointState is missing estimator joints: {missing}")
+            raise ValueError(f'JointState is missing estimator joints: {missing}')
 
         joint_position = np.empty(12, dtype=np.float64)
         joint_velocity = np.empty(12, dtype=np.float64)
         for output_index, name in enumerate(self.joint_names):
             source_index = name_to_index[name]
-            if source_index >= len(joint_state.position) or source_index >= len(joint_state.velocity):
-                raise ValueError(f"JointState arrays do not contain position and velocity for {name}")
+            if source_index >= len(joint_state.position) or source_index >= len(
+                joint_state.velocity
+            ):
+                raise ValueError(
+                    f'JointState arrays do not contain position and velocity for {name}'
+                )
             joint_position[output_index] = joint_state.position[source_index]
             joint_velocity[output_index] = joint_state.velocity[source_index]
 
@@ -85,7 +90,7 @@ class VelocityEstimatorFeatureBuilder:
         )
         previous_action = np.asarray(previous_policy_action, dtype=np.float64).reshape(-1)
         if previous_action.shape != (12,):
-            raise ValueError(f"Expected 12 previous policy actions, got {previous_action.shape}")
+            raise ValueError(f'Expected 12 previous policy actions, got {previous_action.shape}')
         joint_position_relative = joint_position - self.default_positions
         if joint_position_relative_override is not None:
             override = np.asarray(
@@ -93,25 +98,20 @@ class VelocityEstimatorFeatureBuilder:
                 dtype=np.float64,
             ).reshape(-1)
             if override.shape != (12,) or not np.isfinite(override).all():
-                raise ValueError(
-                    'joint_position_relative_override must contain 12 '
-                    'finite values'
-                )
+                raise ValueError('joint_position_relative_override must contain 12 finite values')
             joint_position_relative = override
 
-        features = np.concatenate(
-            (
-                linear_acceleration,
-                angular_velocity,
-                projected_gravity,
-                joint_position_relative,
-                joint_velocity,
-                previous_action,
-            )
-        )
+        features = np.concatenate((
+            linear_acceleration,
+            angular_velocity,
+            projected_gravity,
+            joint_position_relative,
+            joint_velocity,
+            previous_action,
+        ))
         if features.shape != (45,) or not np.isfinite(features).all():
-            raise ValueError("Velocity-estimator feature frame is invalid")
+            raise ValueError('Velocity-estimator feature frame is invalid')
         return features
 
 
-__all__ = ["VelocityEstimatorFeatureBuilder"]
+__all__ = ['VelocityEstimatorFeatureBuilder']

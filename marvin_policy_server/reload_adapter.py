@@ -1,42 +1,61 @@
 """ROS adapter for supervisor-authorized inactive policy replacement."""
+
 from copy import deepcopy
 import json
+
 import numpy as np
 from runtime_interfaces.srv import PositionDiagnostic
-from .policy_control import PolicyControl
+
 from .execution_preparation import PolicyPreparation
+from .policy_control import PolicyControl
 from .policy_reload import PolicyReload
-from .reload_context import build_context, manifest_contract
+from .reload_context import build_context
+from .reload_context import manifest_contract
 
 
 class ReloadAdapter:
     def __init__(self, node):
         self.node = node
         self.loaded_context = None
-        self.manager = PolicyReload(self.load, self.install, self.released,
-                                    lambda: node._policy_control.session_id)
+        self.manager = PolicyReload(
+            self.load, self.install, self.released, lambda: node._policy_control.session_id
+        )
         node.create_service(PositionDiagnostic, 'reload_policy', self.handle)
         # Management requests advance loading through handle(). Do not add a
         # periodic Python callback to the policy executor while reload is idle.
         # Capture the startup contract, not a mutable environment file at reload time.
         self.spec = {
             'env_sha256': node._loaded_artifacts['env.yaml']['sha256'],
-            'metadata': json.loads(node._concurrent_policy_manifest.path.read_text()) if node._concurrent_policy_manifest else None,
+            'metadata': (
+                json.loads(node._concurrent_policy_manifest.path.read_text())
+                if node._concurrent_policy_manifest
+                else None
+            ),
             'manifest_contract': manifest_contract(node._concurrent_policy_manifest),
             'compact': bool(node.get_parameter('compact_estimator').value),
-            'action_count': len(node.joint_names), 'observation_count': node._expected_obs_dim,
-            'estimator_config': node._velocity_estimator.config if node._velocity_estimator else None,
-            'estimator_indices': node._velocity_estimator.feature_indices if node._velocity_estimator else None,
+            'action_count': len(node.joint_names),
+            'observation_count': node._expected_obs_dim,
+            'estimator_config': (
+                node._velocity_estimator.config if node._velocity_estimator else None
+            ),
+            'estimator_indices': (
+                node._velocity_estimator.feature_indices if node._velocity_estimator else None
+            ),
         }
         self.observation_template = deepcopy(node._obs_state)
 
     def released(self):
         n = self.node
-        return (n._native_io and n._execution_gateway and n._execution_state()['output_released']
-                and not n._activation_mgr.is_active())
+        return (
+            n._native_io
+            and n._execution_gateway
+            and n._execution_state()['output_released']
+            and not n._activation_mgr.is_active()
+        )
 
     def load(self, request):
         from runtime_manager.policy_store import configured
+
         store = configured()
         if store is None:
             raise ValueError('Target policy store is not configured')
@@ -71,15 +90,30 @@ class ReloadAdapter:
             setattr(n, f'_{name}_input_locked', False)
         n._joint_command_output_locked = False
         n._estimator_velocity_override_mode = 'live'
-        for name in ('command_input', 'imu_input', 'joint_position_relative', 'joint_velocity',
-                     'joint_command', 'estimator_velocity', 'estimator_fk', 'estimator_foot_height', 'estimator_contact'):
+        for name in (
+            'command_input',
+            'imu_input',
+            'joint_position_relative',
+            'joint_velocity',
+            'joint_command',
+            'estimator_velocity',
+            'estimator_fk',
+            'estimator_foot_height',
+            'estimator_contact',
+        ):
             setattr(n, '_locked_' + name, None)
-        n._policy_control = PolicyControl(n._observation_status_payload, n._apply_policy_input_lock)
+        n._policy_control = PolicyControl(
+            n._observation_status_payload, n._apply_policy_input_lock
+        )
         self.loaded_context = context
         if old_context:
             old_context.close()
-        return {'old_artifacts': old_identity, 'new_artifacts': deepcopy(context.artifacts),
-                'old_session_id': old_session, 'new_session_id': n._policy_control.session_id}
+        return {
+            'old_artifacts': old_identity,
+            'new_artifacts': deepcopy(context.artifacts),
+            'old_session_id': old_session,
+            'new_session_id': n._policy_control.session_id,
+        }
 
     def handle(self, request, response):
         payload = {}
@@ -89,7 +123,10 @@ class ReloadAdapter:
             payload = json.loads(request.request_json)
             result = self.manager.handle(payload)
         except (ValueError, TypeError, KeyError) as error:
-            result = {'state': 'failed', 'message': str(error),
-                      'request_id': payload.get('request_id', '') if isinstance(payload, dict) else ''}
+            result = {
+                'state': 'failed',
+                'message': str(error),
+                'request_id': payload.get('request_id', '') if isinstance(payload, dict) else '',
+            }
         response.response_json = json.dumps(result, allow_nan=False)
         return response

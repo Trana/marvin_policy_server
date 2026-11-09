@@ -6,7 +6,8 @@ import sqlite3
 import pytest
 
 spec = importlib.util.spec_from_file_location(
-    'quality', Path(__file__).parents[1] / 'scripts/reference_capture_quality.py')
+    'quality', Path(__file__).parents[1] / 'scripts/reference_capture_quality.py'
+)
 quality = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(quality)
 
@@ -49,8 +50,10 @@ def test_typed_snapshot_is_received_evidence_not_a_failed_policy_query(tmp_path)
     with sqlite3.connect(tmp_path / 'topics/bag.db3') as db:
         db.execute('CREATE TABLE topics (id INTEGER, name TEXT)')
         db.execute('CREATE TABLE messages (topic_id INTEGER, timestamp INTEGER)')
-    (tmp_path / 'status.jsonl').write_text('{"state":{"phase":"execution_hold","reason_code":"LEASE_EXPIRED"}}\n'
-                                        '{"error":"status timeout"}\n')
+    (tmp_path / 'status.jsonl').write_text(
+        '{"state":{"phase":"execution_hold","reason_code":"LEASE_EXPIRED"}}\n'
+        '{"error":"status timeout"}\n'
+    )
     status = quality.report(tmp_path)['status']
     assert status['typed_snapshots'] == 1
     assert status['successful'] == 0  # Legacy policy success flags only.

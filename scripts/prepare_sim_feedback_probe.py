@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Prepare a separate simulation layer with read-only articulation diagnostics."""
+
 import argparse
 from pathlib import Path
 
-from prepare_sim_delay_probe import NODE, prepare
+from prepare_sim_delay_probe import NODE
+from prepare_sim_delay_probe import prepare
 
-
-FEEDBACK_WRAPPER = r'''
+FEEDBACK_WRAPPER = r"""
 
 # Inspect the articulation API without changing targets or physics settings.
 _feedback_original_compute = compute
@@ -37,11 +38,12 @@ def compute(db):
     except Exception as error:
         print('SIM_FEEDBACK_PROBE_ERROR ' + str(error), flush=True)
     return result
-'''
+"""
 
 
 def prepare_feedback(scene, output):
     from pxr import Usd
+
     result = prepare(scene, output)
     stage = Usd.Stage.Open(result)
     attribute = stage.GetPrimAtPath(NODE).GetAttribute('inputs:script')
@@ -50,7 +52,9 @@ def prepare_feedback(scene, output):
     attribute.Set(code)
     layer = stage.GetRootLayer()
     metadata = dict(layer.customLayerData)
-    metadata['diagnostic'] = 'read-only articulation feedback plus delay timing; not reference scene'
+    metadata['diagnostic'] = (
+        'read-only articulation feedback plus delay timing; not reference scene'
+    )
     layer.customLayerData = metadata
     layer.Save()
     return result

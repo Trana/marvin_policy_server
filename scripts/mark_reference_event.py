@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Record an operator event beside a reference capture. Does not use ROS."""
+
 import argparse
 import json
 from pathlib import Path
 
 from capture_reference_run import mark_event
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)

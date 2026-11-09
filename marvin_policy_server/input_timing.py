@@ -1,6 +1,7 @@
 """Read-only input timing diagnostics; never used to accept/reject control data."""
-import time
+
 import math
+import time
 
 
 class InputTiming:

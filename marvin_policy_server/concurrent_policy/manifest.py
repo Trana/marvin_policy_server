@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
+import json
 from pathlib import Path
-from ..artifact_identity import artifact_identity
 
+from ..artifact_identity import artifact_identity
 
 SCHEMA = 'marvin.concurrent_policy_export.v1'
 
@@ -40,22 +40,15 @@ def load_concurrent_policy_manifest(
         content = metadata_path.read_bytes()
         payload = json.loads(content)
     except (OSError, ValueError) as exc:
-        raise ValueError(
-            f'Cannot read concurrent policy metadata {metadata_path}: {exc}'
-        ) from exc
+        raise ValueError(f'Cannot read concurrent policy metadata {metadata_path}: {exc}') from exc
     if not isinstance(payload, dict) or payload.get('schema') != SCHEMA:
         return None
     artifacts = payload.get('artifacts', {})
-    if (
-        not isinstance(artifacts, dict)
-        or policy_path.name != artifacts.get('combined_policy')
-    ):
+    if not isinstance(artifacts, dict) or policy_path.name != artifacts.get('combined_policy'):
         return None
     dimensions = payload.get('dimensions', {})
     if not isinstance(dimensions, dict):
-        raise ValueError(
-            f'Concurrent policy dimensions are missing in {metadata_path}'
-        )
+        raise ValueError(f'Concurrent policy dimensions are missing in {metadata_path}')
     try:
         manifest = ConcurrentPolicyManifest(
             base_observation_count=int(dimensions['base_policy_observation']),
@@ -66,7 +59,7 @@ def load_concurrent_policy_manifest(
             action_count=int(dimensions['joint_action']),
             path=metadata_path,
             loaded_artifact=artifact_identity(metadata_path, content),
-            training=payload.get("training"),
+            training=payload.get('training'),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError(
@@ -81,17 +74,9 @@ def load_concurrent_policy_manifest(
         manifest.action_count,
     )
     if min(values) <= 0:
-        raise ValueError(
-            f'Concurrent policy dimensions must be positive in {metadata_path}'
-        )
-    if (
-        manifest.actor_observation_count
-        != manifest.base_observation_count + 20
-    ):
-        raise ValueError(
-            'Concurrent actor observation must add FK(12), height(4), and '
-            'contact(4)'
-        )
+        raise ValueError(f'Concurrent policy dimensions must be positive in {metadata_path}')
+    if manifest.actor_observation_count != manifest.base_observation_count + 20:
+        raise ValueError('Concurrent actor observation must add FK(12), height(4), and contact(4)')
     return manifest
 
 
