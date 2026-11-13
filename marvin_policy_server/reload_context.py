@@ -14,6 +14,7 @@ from .artifact_identity import artifact_identity
 from .concurrent_policy.manifest import load_concurrent_policy_manifest
 from .concurrent_policy.optimized import optimize_policy
 from .concurrent_policy.runner import ConcurrentPolicyRunner
+from .inference_engine import DEFAULT_ENGINE, prepare_policy
 from .policy_runner import PolicyRunner
 from .policy_runner import PolicyRunnerConfig
 from .velocity_estimator import VelocityEstimator
@@ -106,6 +107,10 @@ def build_context(request, spec, store):
         policy = torch.jit.load(io.BytesIO(content), map_location='cpu').eval()
         if spec['compact']:
             policy = optimize_policy(policy, manifest)
+        policy = prepare_policy(
+            policy, manifest=manifest, observation_count=spec['observation_count'],
+            action_count=spec['action_count'], engine=spec.get('inference_engine', DEFAULT_ENGINE),
+        )
         runner = (
             ConcurrentPolicyRunner(policy, manifest, decimation=4)
             if manifest
@@ -127,7 +132,7 @@ def build_context(request, spec, store):
         if manifest:
             artifacts['metadata.json'] = manifest.loaded_artifact
         if spec['estimator_config'] is not None:
-            estimator = VelocityEstimator(root / 'velocity_estimator.pt')
+            estimator = VelocityEstimator(root / 'velocity_estimator.pt', engine=spec.get('inference_engine', DEFAULT_ENGINE))
             if (
                 estimator.config != spec['estimator_config']
                 or estimator.feature_indices != spec['estimator_indices']

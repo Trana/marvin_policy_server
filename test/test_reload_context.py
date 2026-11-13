@@ -71,11 +71,15 @@ def request(store, bundle):
     }
 
 
-def test_a_b_a_loads_exact_models_and_resets_warmup_state(rig):
+@pytest.mark.parametrize('engine', ['onnxruntime', 'torchscript'])
+def test_a_b_a_loads_exact_models_and_resets_warmup_state(rig, engine):
+    from marvin_policy_server.inference_engine import engine_identity
     store, bundles, spec = rig
+    spec = {**spec, 'inference_engine': engine}
     for index in (0, 1, 0):
         ctx = build_context(request(store, bundles[index]), spec, store)
         try:
+            assert engine_identity(ctx.policy)['engine'] == engine
             assert ctx.runner.counter == 0
             assert np.array_equal(ctx.runner.current_action, np.zeros(12))
             np.testing.assert_allclose(
@@ -94,7 +98,7 @@ def test_incompatible_environment_and_bad_output_cleanup_references(rig):
     store, bundles, spec = rig
     with pytest.raises(ValueError, match='environment file'):
         build_context(request(store, bundles[0]), {**spec, 'env_sha256': '0' * 64}, store)
-    with pytest.raises(ValueError, match='invalid joint actions'):
+    with pytest.raises(ValueError, match='invalid joint actions|ONNX output'):
         build_context(request(store, bundles[0]), {**spec, 'action_count': 13}, store)
     with store.transaction() as state:
         assert not state['references']
@@ -184,5 +188,17 @@ def test_combined_model_discards_warmup_history_and_rejects_metadata_drift(rig, 
             {**spec, 'metadata': {**spec['metadata'], 'combined_outputs': ['wrong']}},
             store,
         )
+    with store.transaction() as state:
+        assert not state['references']
+
+
+def test_missing_engine_dependencies_release_reload_reference(rig, monkeypatch):
+    import marvin_policy_server.reload_context as context
+    store, bundles, spec = rig
+    def fail(*a, **kw):
+        raise RuntimeError('ONNX engine dependencies are missing')
+    monkeypatch.setattr(context, 'prepare_policy', fail)
+    with pytest.raises(RuntimeError, match='dependencies'):
+        build_context(request(store, bundles[0]), spec, store)
     with store.transaction() as state:
         assert not state['references']

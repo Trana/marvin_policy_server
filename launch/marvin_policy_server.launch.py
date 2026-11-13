@@ -67,6 +67,7 @@ def generate_launch_description():
         prefix=LaunchConfiguration('policy_python_executable'),
         output='screen',
         parameters=[{
+            'inference_engine': ParameterValue(LaunchConfiguration('inference_engine'), value_type=str),
             'async_inference': ParameterValue(PolicyAsyncSetting(), value_type=bool),
             'native_io_executable': ParameterValue(
                 LaunchConfiguration('native_io_executable'), value_type=str
@@ -162,6 +163,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('execution_gateway', default_value='false'),
+        DeclareLaunchArgument(
+            'inference_engine', choices=['onnxruntime', 'torchscript'],
+            default_value=EnvironmentVariable('MARVIN_POLICY_INFERENCE_ENGINE', default_value='onnxruntime'),
+        ),
         DeclareLaunchArgument(
             'io_backend',
             choices=['python', 'native'],
