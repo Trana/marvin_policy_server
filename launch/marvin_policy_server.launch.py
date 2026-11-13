@@ -67,6 +67,7 @@ def generate_launch_description():
         prefix=LaunchConfiguration('policy_python_executable'),
         output='screen',
         parameters=[{
+            'inference_engine': ParameterValue(LaunchConfiguration('inference_engine'), value_type=str),
             'async_inference': ParameterValue(PolicyAsyncSetting(), value_type=bool),
             'native_io_executable': ParameterValue(
                 LaunchConfiguration('native_io_executable'), value_type=str
@@ -81,6 +82,9 @@ def generate_launch_description():
                 LaunchConfiguration('inference_max_age_ms'), value_type=float
             ),
             'publish_period_ms': LaunchConfiguration('publish_period_ms'),
+            'mock_policy_rate_hz': ParameterValue(
+                LaunchConfiguration('mock_policy_rate_hz'), value_type=int
+            ),
             'policy_path': LaunchConfiguration('policy_path'),
             'env_path': LaunchConfiguration('env_path'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -160,6 +164,10 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('execution_gateway', default_value='false'),
         DeclareLaunchArgument(
+            'inference_engine', choices=['onnxruntime', 'torchscript'],
+            default_value=EnvironmentVariable('MARVIN_POLICY_INFERENCE_ENGINE', default_value='onnxruntime'),
+        ),
+        DeclareLaunchArgument(
             'io_backend',
             choices=['python', 'native'],
             default_value=EnvironmentVariable('MARVIN_POLICY_IO_BACKEND', default_value='python'),
@@ -199,6 +207,11 @@ def generate_launch_description():
             default_value=EnvironmentVariable(
                 'MARVIN_POLICY_INFERENCE_MAX_AGE_MS', default_value='100.0'
             ),
+        ),
+        DeclareLaunchArgument(
+            'mock_policy_rate_hz',
+            default_value=EnvironmentVariable('MARVIN_POLICY_MOCK_RATE_HZ', default_value='0'),
+            description='Explicit wall-time pi_mock experiment: 0 uses artifact cadence, 50 overrides it',
         ),
         DeclareLaunchArgument('operator_input_required', default_value='false'),
         DeclareLaunchArgument(

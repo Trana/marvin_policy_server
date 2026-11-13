@@ -61,6 +61,19 @@ class PolicyCadence:
                 result._check_rate(training['policy_rate_hz'])
         return result
 
+    def for_mock_rate(self, rate_hz, *, runtime_profile, use_sim_time):
+        """Allow the explicit Pi mock experiment without changing artifact timing."""
+        if type(rate_hz) is not int or rate_hz not in (0, 50):
+            raise ValueError('Mock policy rate must be 0 (artifact) or 50 Hz')
+        if rate_hz == 0:
+            return self
+        if runtime_profile != 'pi_mock' or use_sim_time:
+            raise ValueError('Mock policy rate override requires pi_mock and wall time')
+        period = 20_000_000
+        if period % self.physics_dt_ns:
+            raise ValueError('Mock 50 Hz cannot be represented by the artifact physics ticks')
+        return PolicyCadence(self.physics_dt_ns, (period // self.physics_dt_ns,), 'mock_rate_override')
+
     def _check_rate(self, value):
         if (
             isinstance(value, bool)
