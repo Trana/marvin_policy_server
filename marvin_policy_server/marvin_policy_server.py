@@ -121,6 +121,7 @@ class MarvinPolicyServer(PolicyNode):
 
         # Declare and set parameters
         self.declare_parameter('publish_period_ms', 5)
+        self.declare_parameter('mock_policy_rate_hz', 0)
         # Opt-in until matching simulation and physical acceptance checks pass.
         self.declare_parameter('async_inference', False)
         self.declare_parameter('inference_max_age_ms', 100.0)
@@ -477,9 +478,19 @@ class MarvinPolicyServer(PolicyNode):
 
         env_loader = EnvConfigLoader(self._env_path)
         manifest = self._concurrent_policy_manifest
-        self._policy_cadence = env_loader.get_policy_cadence(
+        self._artifact_policy_cadence = env_loader.get_policy_cadence(
             manifest.training if manifest else None
         )
+        self._policy_cadence = self._artifact_policy_cadence.for_mock_rate(
+            self.get_parameter('mock_policy_rate_hz').value,
+            runtime_profile=os.environ.get('ROBOT_RUNTIME_PROFILE'),
+            use_sim_time=bool(self.get_parameter('use_sim_time').value),
+        )
+        if self._policy_cadence is not self._artifact_policy_cadence:
+            self.get_logger().warning(
+                'MOCK ONLY: overriding artifact cadence '
+                f'{self._artifact_policy_cadence.mean_hz:.6f} Hz with 50 Hz'
+            )
         profile = env_loader.get_deployment_timing()
         delay_max_ns = (
             int(max(profile['inference_delay_ms']) * 1e6)
@@ -1389,6 +1400,8 @@ class MarvinPolicyServer(PolicyNode):
         return {
             'schema': 'marvin.policy-timing.v1',
             'cadence': cadence.projection(),
+            'artifact_cadence': self._artifact_policy_cadence.projection(),
+            'mock_policy_rate_hz': self.get_parameter('mock_policy_rate_hz').value,
             'environment_sha256': self._loaded_artifacts['env.yaml']['sha256'],
             'source': cadence.source,
             'scheduler': 'native-fixed' if self._native_io else 'python-cyclic',

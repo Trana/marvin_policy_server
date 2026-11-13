@@ -81,6 +81,9 @@ def generate_launch_description():
                 LaunchConfiguration('inference_max_age_ms'), value_type=float
             ),
             'publish_period_ms': LaunchConfiguration('publish_period_ms'),
+            'mock_policy_rate_hz': ParameterValue(
+                LaunchConfiguration('mock_policy_rate_hz'), value_type=int
+            ),
             'policy_path': LaunchConfiguration('policy_path'),
             'env_path': LaunchConfiguration('env_path'),
             'use_sim_time': LaunchConfiguration('use_sim_time'),
@@ -199,6 +202,11 @@ def generate_launch_description():
             default_value=EnvironmentVariable(
                 'MARVIN_POLICY_INFERENCE_MAX_AGE_MS', default_value='100.0'
             ),
+        ),
+        DeclareLaunchArgument(
+            'mock_policy_rate_hz',
+            default_value=EnvironmentVariable('MARVIN_POLICY_MOCK_RATE_HZ', default_value='0'),
+            description='Explicit wall-time pi_mock experiment: 0 uses artifact cadence, 50 overrides it',
         ),
         DeclareLaunchArgument('operator_input_required', default_value='false'),
         DeclareLaunchArgument(
