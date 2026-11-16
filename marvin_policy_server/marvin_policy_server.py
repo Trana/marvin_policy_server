@@ -86,6 +86,7 @@ from .policy_control import PolicyControl
 from .policy_control import PolicyControlError
 from .policy_node import PolicyNode
 from .policy_runner import PolicyRunner
+from .inference_engine import DEFAULT_ENGINE, engine_identity, prepare_policy, validate_engine
 from .policy_runner import PolicyRunnerConfig
 from .sim_timing import simulation_gate
 from .timing import Timing
@@ -121,6 +122,9 @@ class MarvinPolicyServer(PolicyNode):
 
         # Declare and set parameters
         self.declare_parameter('publish_period_ms', 5)
+        self.declare_parameter('mock_policy_rate_hz', 0)
+        self.declare_parameter('inference_engine', os.environ.get('MARVIN_POLICY_INFERENCE_ENGINE', DEFAULT_ENGINE))
+        validate_engine(self.get_parameter('inference_engine').value)
         # Opt-in until matching simulation and physical acceptance checks pass.
         self.declare_parameter('async_inference', False)
         self.declare_parameter('inference_max_age_ms', 100.0)
@@ -477,9 +481,19 @@ class MarvinPolicyServer(PolicyNode):
 
         env_loader = EnvConfigLoader(self._env_path)
         manifest = self._concurrent_policy_manifest
-        self._policy_cadence = env_loader.get_policy_cadence(
+        self._artifact_policy_cadence = env_loader.get_policy_cadence(
             manifest.training if manifest else None
         )
+        self._policy_cadence = self._artifact_policy_cadence.for_mock_rate(
+            self.get_parameter('mock_policy_rate_hz').value,
+            runtime_profile=os.environ.get('ROBOT_RUNTIME_PROFILE'),
+            use_sim_time=bool(self.get_parameter('use_sim_time').value),
+        )
+        if self._policy_cadence is not self._artifact_policy_cadence:
+            self.get_logger().warning(
+                'MOCK ONLY: overriding artifact cadence '
+                f'{self._artifact_policy_cadence.mean_hz:.6f} Hz with 50 Hz'
+            )
         profile = env_loader.get_deployment_timing()
         delay_max_ns = (
             int(max(profile['inference_delay_ms']) * 1e6)
@@ -640,6 +654,12 @@ class MarvinPolicyServer(PolicyNode):
                 f' expected_obs_dim={self._expected_obs_dim}, policy_path={self.policy_path},'
                 f' env_path={self._env_path}'
             )
+        self.policy = prepare_policy(
+            self.policy, manifest=self._concurrent_policy_manifest,
+            observation_count=self._expected_obs_dim, action_count=len(self.joint_names),
+            engine=self.get_parameter('inference_engine').value,
+        )
+        self._logger.info(f'Policy inference engine: {engine_identity(self.policy)}')
         decimation = 4  # Legacy runner fallback; node uses explicit deadline decisions.
         self._inference_schedule = InferenceSchedule(self._policy_cadence.periods_ns)
         if self._concurrent_policy_manifest is None:
@@ -690,6 +710,7 @@ class MarvinPolicyServer(PolicyNode):
                     'metadata_sha256': self._loaded_artifacts.get('metadata.json', {}).get(
                         'sha256'
                     ),
+                    'inference_engine': self.get_parameter('inference_engine').value,
                     'compact_estimator': bool(self.get_parameter('compact_estimator').value),
                     'action_count': len(self.joint_names),
                     'observation_count': self._expected_obs_dim,
@@ -1388,7 +1409,10 @@ class MarvinPolicyServer(PolicyNode):
             return None
         return {
             'schema': 'marvin.policy-timing.v1',
+            'inference_engine': engine_identity(self.policy),
             'cadence': cadence.projection(),
+            'artifact_cadence': self._artifact_policy_cadence.projection(),
+            'mock_policy_rate_hz': self.get_parameter('mock_policy_rate_hz').value,
             'environment_sha256': self._loaded_artifacts['env.yaml']['sha256'],
             'source': cadence.source,
             'scheduler': 'native-fixed' if self._native_io else 'python-cyclic',
@@ -1787,7 +1811,7 @@ class MarvinPolicyServer(PolicyNode):
             raise FileNotFoundError(
                 f'Velocity-estimator checkpoint does not exist: {checkpoint_path}'
             )
-        self._velocity_estimator = VelocityEstimator(checkpoint_path)
+        self._velocity_estimator = VelocityEstimator(checkpoint_path, engine=self.get_parameter('inference_engine').value)
         self._velocity_estimator_feature_builder = VelocityEstimatorFeatureBuilder(
             self.joint_names,
             self.default_pos,

@@ -12,6 +12,8 @@ import pytest
 @pytest.mark.parametrize(
     'name,variable,default,override',
     [
+        ('inference_engine', 'MARVIN_POLICY_INFERENCE_ENGINE', 'onnxruntime', 'torchscript'),
+        ('mock_policy_rate_hz', 'MARVIN_POLICY_MOCK_RATE_HZ', '0', '50'),
         ('io_backend', 'MARVIN_POLICY_IO_BACKEND', 'python', 'native'),
         ('async_inference', 'MARVIN_POLICY_ASYNC_INFERENCE', 'false', 'true'),
         ('compact_estimator', 'MARVIN_POLICY_COMPACT_ESTIMATOR', 'false', 'true'),

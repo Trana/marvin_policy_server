@@ -32,6 +32,7 @@ class ReloadAdapter:
                 else None
             ),
             'manifest_contract': manifest_contract(node._concurrent_policy_manifest),
+            'inference_engine': node.get_parameter('inference_engine').value,
             'compact': bool(node.get_parameter('compact_estimator').value),
             'action_count': len(node.joint_names),
             'observation_count': node._expected_obs_dim,

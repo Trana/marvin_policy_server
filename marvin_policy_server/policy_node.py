@@ -1,13 +1,8 @@
 """Optional lower-overhead ROS endpoints. Parameter services remain available."""
 
+from rclpy.event_handler import PublisherEventCallbacks
+from rclpy.event_handler import SubscriptionEventCallbacks
 from rclpy.node import Node
-
-try:
-    from rclpy.event_handler import PublisherEventCallbacks
-    from rclpy.event_handler import SubscriptionEventCallbacks
-except ImportError:  # Humble uses the older module name.
-    from rclpy.qos_event import PublisherEventCallbacks
-    from rclpy.qos_event import SubscriptionEventCallbacks
 
 
 class PolicyNode(Node):

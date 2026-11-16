@@ -103,3 +103,25 @@ def test_invalid_action_does_not_replace_last_safe_action(action):
     assert node._poll_async_inference(10) is None
     np.testing.assert_array_equal(node.action, [0.0, 0.0])
     assert node._async_fault
+
+
+@pytest.mark.parametrize('engine', ['onnxruntime', 'torchscript'])
+def test_worker_loads_selected_engine_and_resets_warmup(tmp_path, monkeypatch, engine):
+    import hashlib
+    import torch
+    from marvin_policy_server.async_policy import create_runner_task
+    from marvin_policy_server.inference_engine import engine_identity
+    # The actual process calls this once; this in-process check avoids changing
+    # the pytest interpreter's already initialized inter-op pool.
+    monkeypatch.setattr(torch, 'set_num_interop_threads', lambda n: None)
+    path = tmp_path / 'policy.pt'
+    torch.jit.script(torch.nn.Linear(4, 2).eval()).save(str(path))
+    task = create_runner_task({'policy_path': str(path),
+        'policy_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+        'compact_estimator': False, 'observation_count': 4, 'action_count': 2,
+        'inference_engine': engine})
+    assert engine_identity(task.runner.policy)['engine'] == engine
+    assert task.runner.counter == 0
+    np.testing.assert_array_equal(task.runner.current_action, np.zeros(2))
+    action, _ = task(((np.ones(4),), {'infer': True}))
+    assert action.shape == (2,) and np.isfinite(action).all()

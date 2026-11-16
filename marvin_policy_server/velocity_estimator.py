@@ -1,4 +1,4 @@
-"""Small, dependency-free runtime wrapper for Marvin's velocity estimator."""
+"""Reset-safe runtime wrapper for Marvin's velocity estimator."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ class _VelocityEstimatorMlp(nn.Module):
 class VelocityEstimator:
     """Load a training checkpoint and maintain one reset-safe feature history."""
 
-    def __init__(self, checkpoint_path: Path):
+    def __init__(self, checkpoint_path: Path, *, engine='torchscript'):
         self.checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         content = self.checkpoint_path.read_bytes()
         checkpoint = torch.load(io.BytesIO(content), map_location='cpu', weights_only=True)
@@ -64,6 +64,11 @@ class VelocityEstimator:
         self.model = _VelocityEstimatorMlp(self.config)
         self.model.load_state_dict(checkpoint['model_state_dict'], strict=True)
         self.model.eval()
+        from .inference_engine import prepare_forward
+        self.model = prepare_forward(
+            self.model, (torch.zeros(1, self.config.history_length, self.config.feature_count),),
+            [(1, self.config.output_count)], engine=engine,
+        )
 
         normalization = checkpoint['normalization']
         self.feature_mean = self._tensor(normalization['feature_mean'])

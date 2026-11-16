@@ -83,3 +83,34 @@ def test_cyclic_jump_reset_and_no_burst():
     schedule.complete(0, 0)
     assert schedule.deadline_ns == 20
     assert schedule.observed()['sample_count'] == 1
+
+
+def test_mock_rate_preserves_artifact_and_native_guard():
+    artifact = PolicyCadence.resolve(config(policy_interval_ticks=[4, 5]))
+    original = artifact.projection()
+    assert artifact.for_mock_rate(0, runtime_profile='pi', use_sim_time=False) is artifact
+    effective = artifact.for_mock_rate(50, runtime_profile='pi_mock', use_sim_time=False)
+    assert effective.periods_ns == (20_000_000,)
+    assert effective.source == 'mock_rate_override'
+    effective.validate_backend(5_000_000, native=True)
+    assert artifact.projection() == original
+    with pytest.raises(ValueError, match='Native policy I/O'):
+        artifact.validate_backend(5_000_000, native=True)
+
+
+@pytest.mark.parametrize('profile,sim', [('pi', False), (None, False), ('pi_mock', True)])
+def test_mock_rate_rejects_other_runtime_targets(profile, sim):
+    with pytest.raises(ValueError, match='requires pi_mock'):
+        PolicyCadence.resolve(config()).for_mock_rate(50, runtime_profile=profile, use_sim_time=sim)
+
+
+@pytest.mark.parametrize('rate', [True, 50.0, '50', -1, 44, 100])
+def test_mock_rate_rejects_unsupported_values(rate):
+    with pytest.raises(ValueError, match='0 .* or 50'):
+        PolicyCadence.resolve(config()).for_mock_rate(rate, runtime_profile='pi_mock', use_sim_time=False)
+
+
+def test_mock_rate_requires_exact_physics_ticks():
+    artifact = PolicyCadence.resolve({'sim': {'dt': 0.003}, 'decimation': 4})
+    with pytest.raises(ValueError, match='physics ticks'):
+        artifact.for_mock_rate(50, runtime_profile='pi_mock', use_sim_time=False)

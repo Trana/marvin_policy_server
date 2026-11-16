@@ -1,0 +1,9 @@
+# Default policy inference engine. Python 3.11+; install with requirements-robot.txt.
+# Explicit TorchScript installations can omit these optional engine dependencies.
+onnx==1.23.2
+onnxruntime==1.32.0
+numpy==1.26.4
+protobuf==7.36.2
+ml_dtypes==0.5.4
+flatbuffers==25.12.19
+packaging==26.3
